@@ -3,13 +3,14 @@ import 'dart:convert';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
+import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 
 /// Signaling service for WebRTC communication - RECEIVER MODE
 /// This app waits for incoming calls from web clients
 class SignalingService {
   // Hard-coded WebSocket server URL
   // TODO: Replace with your actual signaling server URL
-  static const String _signalingServerUrl = 'ws://192.168.1.31:8080';
+  static const String _signalingServerUrl = 'ws://10.0.2.2:8080';
 
   // Hard-coded room name
   static const String _roomName = 'test-call';
@@ -19,35 +20,18 @@ class SignalingService {
   // For PRODUCTION (different networks): Add TURN server
   final Map<String, dynamic> _iceServers = {
     'iceServers': [
-      // Public STUN servers (free to use)
-      {'urls': 'stun:stun.l.google.com:19302'},
-      {'urls': 'stun:stun1.l.google.com:19302'},
+      // Local STUN server
+      {'urls': 'stun:10.0.2.2:3478'},
 
-      // Local TURN server (running on WSL/local machine)
-      // Uncomment after setting up local Coturn server
-      /*
+      // Local TURN server
       {
         'urls': [
-          'turn:192.168.1.31:3478?transport=udp',
-          'turn:192.168.1.31:3478?transport=tcp',
+          'turn:10.0.2.2:3478?transport=udp',
+          'turn:10.0.2.2:3478?transport=tcp',
         ],
-        'username': 'testuser',
-        'credential': 'testpass123',
+        'username': 'myuser',
+        'credential': 'mypassword',
       }
-      */
-
-      // Production TURN server
-      // Uncomment for production with cloud TURN server
-      /*
-      {
-        'urls': [
-          'turn:YOUR_TURN_SERVER_IP:3478?transport=udp',
-          'turn:YOUR_TURN_SERVER_IP:3478?transport=tcp',
-        ],
-        'username': 'your_turn_username',
-        'credential': 'your_turn_password',
-      }
-      */
     ]
   };
 
@@ -66,8 +50,15 @@ class SignalingService {
   // Store pending offer when call comes in
   Map<String, dynamic>? _pendingOffer;
 
+  // Queue for ICE candidates that arrive before remote description is set
+  final List<Map<String, dynamic>> _pendingIceCandidates = [];
+  bool _remoteDescriptionSet = false;
+
   // Flag to track if we're currently reconnecting
   bool _isReconnecting = false;
+
+  // Flag to track ringtone state
+  bool _isRingtonePlaying = false;
 
   // Stream controllers for callbacks
   final _onCallStateChanged = StreamController<CallState>.broadcast();
@@ -86,19 +77,111 @@ class SignalingService {
   /// Initialize the signaling service
   Future<void> initialize() async {
     try {
+      // Log ICE server configuration
+      print('🌐 Initializing WebRTC with ICE servers:');
+      final servers = _iceServers['iceServers'] as List;
+      for (var server in servers) {
+        if (server is Map) {
+          if (server.containsKey('urls')) {
+            final urls = server['urls'];
+            if (urls is List) {
+              for (var url in urls) {
+                print('   - $url');
+              }
+            } else {
+              print('   - $urls');
+            }
+            if (server.containsKey('username')) {
+              print('     Username: ${server['username']}');
+            }
+          }
+        }
+      }
+
       // Create peer connection
       _peerConnection = await createPeerConnection(_iceServers);
 
       // Set up peer connection callbacks
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
+        print('🧊 ICE Candidate generated: ${candidate.candidate}');
         _sendIceCandidate(candidate);
       };
 
+      // Monitor ICE connection state
+      _peerConnection!.onIceConnectionState = (RTCIceConnectionState state) {
+        print('🔌 ICE Connection State: $state');
+        switch (state) {
+          case RTCIceConnectionState.RTCIceConnectionStateNew:
+            print('   ICE: New - Starting ICE checks');
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateChecking:
+            print('   ICE: Checking - Testing connectivity');
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateConnected:
+            print('   ✅ ICE: Connected - Media can flow!');
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+            print('   ✅ ICE: Completed - All checks done');
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateFailed:
+            print('   ❌ ICE: Failed - Connection cannot be established');
+            print('   ⚠️ TURN server may be needed!');
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+            print('   ⚠️ ICE: Disconnected - Temporarily lost connection');
+            break;
+          case RTCIceConnectionState.RTCIceConnectionStateClosed:
+            print('   ICE: Closed');
+            break;
+          default:
+            break;
+        }
+      };
+
+      // Monitor ICE gathering state
+      _peerConnection!.onIceGatheringState = (RTCIceGatheringState state) {
+        print('🔍 ICE Gathering State: $state');
+        switch (state) {
+          case RTCIceGatheringState.RTCIceGatheringStateNew:
+            print('   Gathering: New');
+            break;
+          case RTCIceGatheringState.RTCIceGatheringStateGathering:
+            print('   Gathering: In progress...');
+            break;
+          case RTCIceGatheringState.RTCIceGatheringStateComplete:
+            print('   ✅ Gathering: Complete - All candidates found');
+            break;
+        }
+      };
+
       _peerConnection!.onTrack = (RTCTrackEvent event) {
-        print('Received remote track');
+        print('🎥 Received remote ${event.track.kind} track');
+        print('   - Track ID: ${event.track.id}');
+        print('   - Track enabled: ${event.track.enabled}');
+
         if (event.streams.isNotEmpty) {
-          _remoteStream = event.streams[0];
-          _onRemoteStream.add(_remoteStream!);
+          // Get the first stream
+          final stream = event.streams[0];
+
+          // Enable the track
+          event.track.enabled = true;
+
+          // Update or set the remote stream
+          if (_remoteStream == null || _remoteStream!.id != stream.id) {
+            _remoteStream = stream;
+            print('✅ New remote stream: ${stream.id}');
+            print('   - Video tracks: ${_remoteStream!.getVideoTracks().length}');
+            print('   - Audio tracks: ${_remoteStream!.getAudioTracks().length}');
+
+            // Notify UI about the stream
+            _onRemoteStream.add(_remoteStream!);
+          } else {
+            print('✅ Track added to existing stream');
+            // Still notify UI in case it's a new track type
+            _onRemoteStream.add(_remoteStream!);
+          }
+        } else {
+          print('⚠️ No streams in track event');
         }
       };
 
@@ -178,6 +261,9 @@ class SignalingService {
           _pendingOffer = data['sdp']; // Store the offer
           _onCallStateChanged.add(CallState.incoming);
           _onIncomingCall.add(null); // Notify UI
+
+          // Play ringtone
+          await _playRingtone();
           break;
         case 'ice-candidate':
           await _handleIceCandidate(data['candidate']);
@@ -222,36 +308,61 @@ class SignalingService {
     try {
       print('Accepting call...');
 
+      // Stop ringtone
+      await _stopRingtone();
+
+      // Get local media (audio and video) FIRST
+      print('Requesting camera and microphone access...');
+
+      try {
+        _localStream = await navigator.mediaDevices.getUserMedia({
+          'audio': {
+            'echoCancellation': true,
+            'noiseSuppression': true,
+          },
+          'video': {
+            'facingMode': 'user', // Front camera
+            'width': {'ideal': 1280, 'max': 1920},
+            'height': {'ideal': 720, 'max': 1080},
+            'frameRate': {'ideal': 30, 'max': 30},
+          }
+        });
+      } catch (e) {
+        print('❌ Failed to get camera/microphone: $e');
+        print('⚠️ Make sure camera and microphone permissions are granted');
+        _onCallStateChanged.add(CallState.error);
+        rethrow;
+      }
+
+      print('✅ Got local audio/video stream');
+      print('   - Video tracks: ${_localStream!.getVideoTracks().length}');
+      print('   - Audio tracks: ${_localStream!.getAudioTracks().length}');
+
+      // Enable video tracks
+      for (var track in _localStream!.getVideoTracks()) {
+        track.enabled = true;
+        print('   - Video track enabled: ${track.id}');
+      }
+
+      _onLocalStream.add(_localStream!);
+
+      // Add local tracks to peer connection BEFORE handling offer
+      _localStream!.getTracks().forEach((track) {
+        _peerConnection!.addTrack(track, _localStream!);
+        print('✅ Added ${track.kind} track to peer connection');
+      });
+
       // Notify the other side that we accepted
       _sendMessage({
         'type': 'call-accepted',
         'room': _roomName,
       });
 
-      // Get local media (audio and video)
-      _localStream = await navigator.mediaDevices.getUserMedia({
-        'audio': true,
-        'video': {
-          'facingMode': 'user', // Front camera
-          'width': {'ideal': 1280},
-          'height': {'ideal': 720},
-        }
-      });
-
-      print('Got local audio/video stream');
-      _onLocalStream.add(_localStream!);
-
-      // Add local tracks to peer connection
-      _localStream!.getTracks().forEach((track) {
-        _peerConnection!.addTrack(track, _localStream!);
-        print('Added ${track.kind} track to peer connection');
-      });
-
       // Now handle the offer and create answer
       await _handleOffer(_pendingOffer!);
       _pendingOffer = null; // Clear pending offer
     } catch (e) {
-      print('Error accepting call: $e');
+      print('❌ Error accepting call: $e');
       _onCallStateChanged.add(CallState.error);
     }
   }
@@ -265,6 +376,9 @@ class SignalingService {
 
     try {
       print('Rejecting call...');
+
+      // Stop ringtone
+      await _stopRingtone();
 
       // Clear pending offer
       _pendingOffer = null;
@@ -287,7 +401,7 @@ class SignalingService {
   /// Handle incoming offer from web caller
   Future<void> _handleOffer(Map<String, dynamic> sdpMap) async {
     try {
-      print('Processing incoming offer...');
+      print('📥 Processing incoming offer...');
       _onCallStateChanged.add(CallState.connecting);
 
       RTCSessionDescription offer = RTCSessionDescription(
@@ -297,17 +411,60 @@ class SignalingService {
 
       // Set remote description (the offer)
       await _peerConnection!.setRemoteDescription(offer);
-      print('Remote description (offer) set');
+      print('✅ Remote description (offer) set');
+      _remoteDescriptionSet = true;
 
-      // Create answer
+      // Add any queued ICE candidates
+      await _addQueuedIceCandidates();
+
+      // Check if offer contains video
+      if (offer.sdp != null) {
+        if (offer.sdp!.contains('m=video')) {
+          print('✅ Offer contains video track');
+          // Count video lines
+          final videoLines = offer.sdp!.split('\n').where((line) =>
+            line.startsWith('a=rtpmap:') && (line.contains('VP8') || line.contains('VP9') || line.contains('H264'))
+          ).length;
+          print('   - Video codecs found: $videoLines');
+        } else {
+          print('⚠️ Offer does NOT contain video track');
+        }
+      }
+
+      // Create answer with proper video/audio constraints
       RTCSessionDescription answer = await _peerConnection!.createAnswer({
-        'offerToReceiveAudio': true,
-        'offerToReceiveVideo': true, // Enable video
+        'mandatory': {
+          'OfferToReceiveAudio': true,
+          'OfferToReceiveVideo': true,
+        },
       });
+
+      // Check if answer contains video
+      if (answer.sdp != null) {
+        if (answer.sdp!.contains('m=video')) {
+          print('✅ Answer contains video track');
+          // Count video lines
+          final videoLines = answer.sdp!.split('\n').where((line) =>
+            line.startsWith('a=rtpmap:') && (line.contains('VP8') || line.contains('VP9') || line.contains('H264'))
+          ).length;
+          print('   - Video codecs in answer: $videoLines');
+
+          // Check video direction
+          if (answer.sdp!.contains('a=sendrecv')) {
+            print('   - Video direction: sendrecv ✅');
+          } else if (answer.sdp!.contains('a=recvonly')) {
+            print('   - Video direction: recvonly (we receive only)');
+          } else if (answer.sdp!.contains('a=sendonly')) {
+            print('   - Video direction: sendonly (we send only)');
+          }
+        } else {
+          print('⚠️ Answer does NOT contain video track');
+        }
+      }
 
       // Set local description (our answer)
       await _peerConnection!.setLocalDescription(answer);
-      print('Local description (answer) set');
+      print('✅ Local description (answer) set');
 
       // Send answer back to caller
       _sendMessage({
@@ -319,9 +476,9 @@ class SignalingService {
         },
       });
 
-      print('Answer sent - Call connecting...');
+      print('✅ Answer sent - Call connecting...');
     } catch (e) {
-      print('Error handling offer: $e');
+      print('❌ Error handling offer: $e');
       _onCallStateChanged.add(CallState.error);
     }
   }
@@ -329,6 +486,16 @@ class SignalingService {
   /// Handle ICE candidate from remote peer
   Future<void> _handleIceCandidate(Map<String, dynamic> candidateMap) async {
     try {
+      print('🧊 Received ICE candidate from remote peer');
+
+      // If remote description is not set yet, queue the candidate
+      if (!_remoteDescriptionSet) {
+        print('   ⏳ Queueing candidate (remote description not set yet)');
+        _pendingIceCandidates.add(candidateMap);
+        return;
+      }
+
+      // Add the candidate
       RTCIceCandidate candidate = RTCIceCandidate(
         candidateMap['candidate'],
         candidateMap['sdpMid'],
@@ -336,10 +503,45 @@ class SignalingService {
       );
 
       await _peerConnection!.addCandidate(candidate);
-      print('ICE candidate added');
+      print('   ✅ ICE candidate added successfully');
+
+      // Print candidate type for debugging
+      final candidateStr = candidateMap['candidate'] as String;
+      if (candidateStr.contains('typ host')) {
+        print('   - Type: host (local network)');
+      } else if (candidateStr.contains('typ srflx')) {
+        print('   - Type: srflx (STUN - public IP)');
+      } else if (candidateStr.contains('typ relay')) {
+        print('   - Type: relay (TURN - relayed)');
+      }
     } catch (e) {
-      print('Error handling ICE candidate: $e');
+      print('❌ Error handling ICE candidate: $e');
     }
+  }
+
+  /// Add queued ICE candidates after remote description is set
+  Future<void> _addQueuedIceCandidates() async {
+    if (_pendingIceCandidates.isEmpty) return;
+
+    print('📋 Adding ${_pendingIceCandidates.length} queued ICE candidates');
+
+    for (final candidateMap in _pendingIceCandidates) {
+      try {
+        RTCIceCandidate candidate = RTCIceCandidate(
+          candidateMap['candidate'],
+          candidateMap['sdpMid'],
+          candidateMap['sdpMLineIndex'],
+        );
+
+        await _peerConnection!.addCandidate(candidate);
+        print('   ✅ Queued candidate added');
+      } catch (e) {
+        print('   ❌ Error adding queued candidate: $e');
+      }
+    }
+
+    _pendingIceCandidates.clear();
+    print('✅ All queued candidates processed');
   }
 
   /// Send ICE candidate to signaling server
@@ -465,8 +667,48 @@ class SignalingService {
     }
   }
 
+  /// Play ringtone when incoming call arrives
+  Future<void> _playRingtone() async {
+    try {
+      if (_isRingtonePlaying) {
+        print('Ringtone already playing');
+        return;
+      }
+
+      _isRingtonePlaying = true;
+
+      // Play system default ringtone in loop mode
+      await FlutterRingtonePlayer().play(
+        android: AndroidSounds.ringtone,
+        ios: IosSounds.glass,
+        looping: true,
+        volume: 1.0,
+      );
+
+      print('🔔 System ringtone playing');
+    } catch (e) {
+      print('Error playing ringtone: $e');
+      _isRingtonePlaying = false;
+      // Don't throw error - app should work without ringtone
+    }
+  }
+
+  /// Stop ringtone
+  Future<void> _stopRingtone() async {
+    try {
+      if (_isRingtonePlaying) {
+        await FlutterRingtonePlayer().stop();
+        _isRingtonePlaying = false;
+        print('🔕 Ringtone stopped');
+      }
+    } catch (e) {
+      print('Error stopping ringtone: $e');
+    }
+  }
+
   /// Dispose resources
   void dispose() {
+    _stopRingtone(); // Stop ringtone if playing
     _localStream?.getTracks().forEach((track) => track.stop());
     _localStream?.dispose();
     _remoteStream?.dispose();

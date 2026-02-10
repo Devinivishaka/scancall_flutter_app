@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/signaling_service.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class CallScreen extends StatefulWidget {
   const CallScreen({super.key});
@@ -30,12 +31,21 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _initializeRenderers() async {
-    await _localRenderer.initialize();
-    await _remoteRenderer.initialize();
-    setState(() {
-      _localVideoInitialized = true;
-      _remoteVideoInitialized = true;
-    });
+    try {
+      await _localRenderer.initialize();
+      await _remoteRenderer.initialize();
+
+      print('✅ Video renderers initialized');
+      print('   - Local renderer ready: ${_localRenderer.renderVideo}');
+      print('   - Remote renderer ready: ${_remoteRenderer.renderVideo}');
+
+      setState(() {
+        _localVideoInitialized = true;
+        _remoteVideoInitialized = true;
+      });
+    } catch (e) {
+      print('❌ Error initializing renderers: $e');
+    }
   }
 
   Future<void> _initializeService() async {
@@ -79,17 +89,51 @@ class _CallScreenState extends State<CallScreen> {
 
       // Listen to remote stream (incoming video)
       _signalingService.onRemoteStream.listen((stream) {
-        print('Remote audio/video stream received');
+        print('🎥 Remote stream received in UI');
+        print('   - Video tracks: ${stream.getVideoTracks().length}');
+        print('   - Audio tracks: ${stream.getAudioTracks().length}');
+
+        // Ensure video tracks are enabled
+        for (var track in stream.getVideoTracks()) {
+          print('   - Remote video track: ${track.id}, enabled: ${track.enabled}');
+          track.enabled = true;
+        }
+
         setState(() {
           _remoteRenderer.srcObject = stream;
+          print('   ✅ Remote renderer updated with stream');
+        });
+
+        // Force a rebuild after a short delay to ensure video shows
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (mounted) {
+            setState(() {});
+          }
         });
       });
 
       // Listen to local stream (our video)
       _signalingService.onLocalStream.listen((stream) {
-        print('Local audio/video stream received');
+        print('📹 Local stream received in UI');
+        print('   - Video tracks: ${stream.getVideoTracks().length}');
+        print('   - Audio tracks: ${stream.getAudioTracks().length}');
+
+        // Ensure video tracks are enabled
+        for (var track in stream.getVideoTracks()) {
+          print('   - Local video track: ${track.id}, enabled: ${track.enabled}');
+          track.enabled = true;
+        }
+
         setState(() {
           _localRenderer.srcObject = stream;
+          print('   ✅ Local renderer updated with stream');
+        });
+
+        // Force a rebuild after a short delay to ensure video shows
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (mounted) {
+            setState(() {});
+          }
         });
       });
 
@@ -110,6 +154,28 @@ class _CallScreenState extends State<CallScreen> {
   Future<void> _acceptCall() async {
     try {
       print('User accepted the call');
+
+      // Check and request permissions
+      print('Checking camera and microphone permissions...');
+      Map<Permission, PermissionStatus> statuses = await [
+        Permission.camera,
+        Permission.microphone,
+      ].request();
+
+      if (statuses[Permission.camera] != PermissionStatus.granted) {
+        print('❌ Camera permission denied');
+        _showErrorDialog('Camera permission is required for video calls');
+        return;
+      }
+
+      if (statuses[Permission.microphone] != PermissionStatus.granted) {
+        print('❌ Microphone permission denied');
+        _showErrorDialog('Microphone permission is required for calls');
+        return;
+      }
+
+      print('✅ Permissions granted');
+
       setState(() {
         _showIncomingCallUI = false;
         _statusText = 'Accepting call...';
@@ -250,14 +316,31 @@ class _CallScreenState extends State<CallScreen> {
     return Stack(
       children: [
         // Remote video (full screen)
-        _remoteVideoInitialized
-            ? RTCVideoView(_remoteRenderer, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover)
-            : Container(
-                color: Colors.black,
-                child: const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                ),
-              ),
+        Container(
+          color: Colors.black,
+          child: Center(
+            child: _remoteVideoInitialized && _remoteRenderer.srcObject != null
+                ? RTCVideoView(
+                    _remoteRenderer,
+                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                    mirror: false,
+                    filterQuality: FilterQuality.medium,
+                  )
+                : Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const CircularProgressIndicator(color: Colors.white),
+                      const SizedBox(height: 20),
+                      Text(
+                        _remoteRenderer.srcObject == null
+                            ? 'Waiting for video...'
+                            : 'Loading video...',
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ],
+                  ),
+          ),
+        ),
 
         // Local video (picture-in-picture)
         Positioned(
@@ -269,12 +352,20 @@ class _CallScreenState extends State<CallScreen> {
             decoration: BoxDecoration(
               border: Border.all(color: Colors.white, width: 2),
               borderRadius: BorderRadius.circular(12),
+              color: Colors.black,
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(10),
-              child: _localVideoInitialized
-                  ? RTCVideoView(_localRenderer, mirror: true, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover)
-                  : Container(color: Colors.black),
+              child: _localVideoInitialized && _localRenderer.srcObject != null
+                  ? RTCVideoView(
+                      _localRenderer,
+                      mirror: true,
+                      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                      filterQuality: FilterQuality.medium,
+                    )
+                  : const Center(
+                      child: Icon(Icons.person, color: Colors.white54, size: 40),
+                    ),
             ),
           ),
         ),

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Web Caller</title>
+    <title>WebRTC Web Receiver</title>
     <style>
         * {
             margin: 0;
@@ -122,15 +122,37 @@
             cursor: not-allowed;
         }
 
-        .btn-call {
+        .btn-connect {
             background: #4caf50;
             color: white;
         }
 
-        .btn-call:hover:not(:disabled) {
+        .btn-connect:hover:not(:disabled) {
             background: #45a049;
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+
+        .btn-accept {
+            background: #4caf50;
+            color: white;
+        }
+
+        .btn-accept:hover:not(:disabled) {
+            background: #45a049;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+
+        .btn-reject {
+            background: #ff9800;
+            color: white;
+        }
+
+        .btn-reject:hover:not(:disabled) {
+            background: #f57c00;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 152, 0, 0.4);
         }
 
         .btn-end {
@@ -172,11 +194,11 @@
 </head>
 <body>
     <div class="container">
-        <h1>📞 WebRTC Web Caller</h1>
-        <p class="subtitle">Call mobile app receiver</p>
+        <h1>📞 WebRTC Web Receiver</h1>
+        <p class="subtitle">Waiting for incoming call from web caller</p>
 
         <div id="status" class="status idle">
-            Ready to make calls
+            Ready to receive calls
         </div>
 
         <div class="info-box">
@@ -187,7 +209,7 @@
             </div>
             <div class="info-item">
                 <span class="info-label">Room:</span>
-                <span class="info-value">test-call</span>
+                <span class="info-value">web-test</span>
             </div>
             <div class="info-item">
                 <span class="info-label">State:</span>
@@ -198,19 +220,28 @@
         <!-- Video containers -->
         <div id="videoContainer" style="display: none; margin: 20px 0;">
             <div style="position: relative; background: #000; border-radius: 10px; overflow: hidden;">
-                <!-- Remote video (mobile) - large -->
+                <!-- Remote video - large -->
                 <video id="remoteVideo" autoplay playsinline style="width: 100%; height: 400px; object-fit: cover;"></video>
 
-                <!-- Local video (web) - picture-in-picture -->
+                <!-- Local video - picture-in-picture -->
                 <video id="localVideo" autoplay playsinline muted
                        style="position: absolute; top: 10px; right: 10px; width: 150px; height: 100px;
                               border: 2px solid white; border-radius: 8px; object-fit: cover;"></video>
             </div>
         </div>
 
-        <button id="callBtn" class="btn-call" onclick="makeCall()">
-            📞 Call Mobile App
+        <button id="connectBtn" class="btn-connect" onclick="connect()">
+            Connect to Server
         </button>
+
+        <div id="callControls" style="display: none;">
+            <button id="acceptBtn" class="btn-accept" onclick="acceptCall()">
+                ✅ Accept Call
+            </button>
+            <button id="rejectBtn" class="btn-reject" onclick="rejectCall()">
+                ❌ Reject Call
+            </button>
+        </div>
 
         <button id="endBtn" class="btn-end" onclick="endCall()" style="display: none;">
             ❌ End Call
@@ -222,11 +253,11 @@
     <script>
         // Configuration - CHANGE THESE VALUES
         const SIGNALING_SERVER = 'ws://192.168.1.31:8080'; // Change to your server IP
-        const ROOM_NAME = 'test-call';
+        const ROOM_NAME = 'web-test';
 
         const ICE_SERVERS = {
             iceServers: [
-                { urls: 'stun:192.168.1.31:3478' },
+                { urls: 'stun:stun.l.google.com:19302' },
                 {
                     urls: [
                         'turn:192.168.1.31:3478?transport=udp',
@@ -244,6 +275,7 @@
         let localVideo = document.getElementById('localVideo');
         let remoteVideo = document.getElementById('remoteVideo');
         let videoContainer = document.getElementById('videoContainer');
+        let incomingOffer = null;
 
         // Queue for ICE candidates that arrive before remote description is set
         let pendingIceCandidates = [];
@@ -270,19 +302,15 @@
             document.getElementById('connectionState').textContent = state;
         }
 
-        async function makeCall() {
+        async function connect() {
             try {
-                // Reset ICE candidate queue for new call
-                pendingIceCandidates = [];
-                remoteDescriptionSet = false;
-
                 updateStatus('Connecting to signaling server...', 'connecting');
                 log('Connecting to ' + SIGNALING_SERVER);
 
                 // Connect to WebSocket server
                 ws = new WebSocket(SIGNALING_SERVER);
 
-                ws.onopen = async () => {
+                ws.onopen = () => {
                     log('Connected to signaling server', 'success');
                     document.getElementById('serverUrl').textContent = SIGNALING_SERVER;
 
@@ -293,141 +321,8 @@
                     }));
 
                     log('Joined room: ' + ROOM_NAME);
-
-                    // Get user media (microphone + camera)
-                    log('Requesting microphone and camera access...');
-                    localStream = await navigator.mediaDevices.getUserMedia({
-                        audio: true,
-                        video: {
-                            width: { ideal: 1280 },
-                            height: { ideal: 720 },
-                            facingMode: 'user'
-                        }
-                    });
-                    log('Got local audio/video stream', 'success');
-
-                    // Display local video
-                    localVideo.srcObject = localStream;
-                    videoContainer.style.display = 'block';
-
-                    // Log ICE server configuration
-                    log('🌐 ICE Servers configured:');
-                    ICE_SERVERS.iceServers.forEach(server => {
-                        if (Array.isArray(server.urls)) {
-                            server.urls.forEach(url => log('   - ' + url));
-                        } else {
-                            log('   - ' + server.urls);
-                        }
-                        if (server.username) {
-                            log('     Username: ' + server.username);
-                        }
-                    });
-
-                    // Create peer connection
-                    peerConnection = new RTCPeerConnection(ICE_SERVERS);
-                    log('Created peer connection');
-
-                    // Add local tracks
-                    localStream.getTracks().forEach(track => {
-                        peerConnection.addTrack(track, localStream);
-                        log(`Added local ${track.kind} track`);
-                    });
-
-                    // Handle remote tracks (incoming video from mobile)
-                    peerConnection.ontrack = (event) => {
-                        log('🎥 Received remote track: ' + event.track.kind, 'success');
-                        log('   - Track ID: ' + event.track.id);
-                        log('   - Track enabled: ' + event.track.enabled);
-                        log('   - Track muted: ' + event.track.muted);
-                        log('   - Track readyState: ' + event.track.readyState);
-
-                        if (event.streams && event.streams[0]) {
-                            remoteVideo.srcObject = event.streams[0];
-                            log('   - Stream ID: ' + event.streams[0].id);
-                            log('   - Video tracks in stream: ' + event.streams[0].getVideoTracks().length);
-                            log('   - Audio tracks in stream: ' + event.streams[0].getAudioTracks().length);
-                            log('✅ Remote video stream set', 'success');
-                        } else {
-                            log('⚠️ No streams in track event', 'error');
-                        }
-                    };
-
-                    // Handle ICE candidates
-                    peerConnection.onicecandidate = (event) => {
-                        if (event.candidate) {
-                            log('🧊 ICE Candidate: ' + event.candidate.candidate);
-                            ws.send(JSON.stringify({
-                                type: 'ice-candidate',
-                                room: ROOM_NAME,
-                                candidate: {
-                                    candidate: event.candidate.candidate,
-                                    sdpMid: event.candidate.sdpMid,
-                                    sdpMLineIndex: event.candidate.sdpMLineIndex
-                                }
-                            }));
-                        }
-                    };
-
-                    // Monitor ICE connection state
-                    peerConnection.oniceconnectionstatechange = () => {
-                        const state = peerConnection.iceConnectionState;
-                        log('🔌 ICE Connection State: ' + state);
-
-                        if (state === 'connected' || state === 'completed') {
-                            log('✅ ICE Connected - Media can flow!', 'success');
-                        } else if (state === 'failed') {
-                            log('❌ ICE Failed - Connection cannot be established', 'error');
-                            log('⚠️ TURN server may be needed!', 'error');
-                        } else if (state === 'disconnected') {
-                            log('⚠️ ICE Disconnected - Temporarily lost connection', 'error');
-                        }
-                    };
-
-                    // Monitor ICE gathering state
-                    peerConnection.onicegatheringstatechange = () => {
-                        log('🔍 ICE Gathering State: ' + peerConnection.iceGatheringState);
-                    };
-
-                    // Handle connection state changes
-                    peerConnection.onconnectionstatechange = () => {
-                        const state = peerConnection.connectionState;
-                        log(`Connection state: ${state}`);
-                        updateConnectionState(state);
-
-                        if (state === 'connected') {
-                            updateStatus('Call connected!', 'connected');
-                            log('✅ Call connected successfully!', 'success');
-                        } else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-                            updateStatus('Call ended', 'idle');
-                            document.getElementById('callBtn').style.display = 'block';
-                            document.getElementById('endBtn').style.display = 'none';
-                        }
-                    };
-
-                    // Create offer
-                    updateStatus('Creating call offer...', 'connecting');
-                    const offer = await peerConnection.createOffer({
-                        offerToReceiveAudio: true,
-                        offerToReceiveVideo: true
-                    });
-
-                    await peerConnection.setLocalDescription(offer);
-                    log('Created offer', 'success');
-
-                    // Send offer to mobile app
-                    ws.send(JSON.stringify({
-                        type: 'offer',
-                        room: ROOM_NAME,
-                        sdp: {
-                            type: offer.type,
-                            sdp: offer.sdp
-                        }
-                    }));
-                    log('📤 Offer sent to mobile app', 'success');
-                    updateStatus('Waiting for mobile app to answer...', 'connecting');
-
-                    document.getElementById('callBtn').style.display = 'none';
-                    document.getElementById('endBtn').style.display = 'block';
+                    updateStatus('Waiting for incoming call...', 'idle');
+                    document.getElementById('connectBtn').style.display = 'none';
                 };
 
                 ws.onmessage = async (event) => {
@@ -439,43 +334,17 @@
                             log(`Joined room: ${ROOM_NAME}`, 'success');
                             break;
 
-                        case 'answer':
-                            log('📥 Received answer from mobile app', 'success');
-                            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                            log('Set remote description', 'success');
-                            remoteDescriptionSet = true;
-
-                            // Add any queued ICE candidates
-                            if (pendingIceCandidates.length > 0) {
-                                log(`📋 Adding ${pendingIceCandidates.length} queued ICE candidates`);
-                                for (const candidate of pendingIceCandidates) {
-                                    try {
-                                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-                                        log('   ✅ Queued candidate added');
-                                    } catch (e) {
-                                        log('   ❌ Error adding queued candidate: ' + e.message, 'error');
-                                    }
-                                }
-                                pendingIceCandidates = [];
-                                log('✅ All queued candidates processed', 'success');
-                            }
-                            break;
-
-                        case 'call-accepted':
-                            log('✅ Mobile accepted the call!', 'success');
-                            updateStatus('Mobile accepted - Connecting...', 'connecting');
+                        case 'offer':
+                            log('📥 Received offer from caller', 'success');
+                            incomingOffer = data.sdp;
+                            updateStatus('Incoming call - Accept or Reject', 'connecting');
+                            document.getElementById('callControls').style.display = 'block';
                             break;
 
                         case 'call-ended':
-                            log('📵 Mobile ended the call', 'error');
-                            updateStatus('Call ended by mobile', 'error');
+                            log('📵 Caller ended the call', 'error');
+                            updateStatus('Call ended by caller', 'error');
                             handleRemoteEndCall();
-                            break;
-
-                        case 'call-rejected':
-                            log('❌ Mobile rejected the call', 'error');
-                            updateStatus('Call rejected by mobile', 'error');
-                            endCall();
                             break;
 
                         case 'ice-candidate':
@@ -522,14 +391,184 @@
                     updateStatus('Disconnected', 'idle');
                     updateConnectionState('disconnected');
                     document.getElementById('serverUrl').textContent = 'Not connected';
-                    document.getElementById('callBtn').style.display = 'block';
+                    document.getElementById('connectBtn').style.display = 'block';
+                    document.getElementById('callControls').style.display = 'none';
                     document.getElementById('endBtn').style.display = 'none';
                 };
 
             } catch (error) {
-                log('Error making call: ' + error.message, 'error');
+                log('Error connecting: ' + error.message, 'error');
                 updateStatus('Error', 'error');
             }
+        }
+
+        async function acceptCall() {
+            try {
+                updateStatus('Accepting call...', 'connecting');
+                document.getElementById('callControls').style.display = 'none';
+
+                // Get user media (microphone + camera)
+                log('Requesting microphone and camera access...');
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    audio: true,
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: 'user'
+                    }
+                });
+                log('Got local audio/video stream', 'success');
+
+                // Display local video
+                localVideo.srcObject = localStream;
+                videoContainer.style.display = 'block';
+
+                // Log ICE server configuration
+                log('🌐 ICE Servers configured:');
+                ICE_SERVERS.iceServers.forEach(server => {
+                    if (Array.isArray(server.urls)) {
+                        server.urls.forEach(url => log('   - ' + url));
+                    } else {
+                        log('   - ' + server.urls);
+                    }
+                    if (server.username) {
+                        log('     Username: ' + server.username);
+                    }
+                });
+
+                // Create peer connection
+                peerConnection = new RTCPeerConnection(ICE_SERVERS);
+                log('Created peer connection');
+
+                // Add local tracks
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                    log(`Added local ${track.kind} track`);
+                });
+
+                // Handle remote tracks (incoming video from caller)
+                peerConnection.ontrack = (event) => {
+                    log('🎥 Received remote track: ' + event.track.kind, 'success');
+                    log('   - Track ID: ' + event.track.id);
+                    log('   - Track enabled: ' + event.track.enabled);
+                    log('   - Track muted: ' + event.track.muted);
+                    log('   - Track readyState: ' + event.track.readyState);
+
+                    if (event.streams && event.streams[0]) {
+                        remoteVideo.srcObject = event.streams[0];
+                        log('   - Stream ID: ' + event.streams[0].id);
+                        log('   - Video tracks in stream: ' + event.streams[0].getVideoTracks().length);
+                        log('   - Audio tracks in stream: ' + event.streams[0].getAudioTracks().length);
+                        log('✅ Remote video stream set', 'success');
+                    } else {
+                        log('⚠️ No streams in track event', 'error');
+                    }
+                };
+
+                // Handle ICE candidates
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        log('🧊 ICE Candidate: ' + event.candidate.candidate);
+                        ws.send(JSON.stringify({
+                            type: 'ice-candidate',
+                            room: ROOM_NAME,
+                            candidate: {
+                                candidate: event.candidate.candidate,
+                                sdpMid: event.candidate.sdpMid,
+                                sdpMLineIndex: event.candidate.sdpMLineIndex
+                            }
+                        }));
+                    }
+                };
+
+                // Monitor ICE connection state
+                peerConnection.oniceconnectionstatechange = () => {
+                    const state = peerConnection.iceConnectionState;
+                    log('🔌 ICE Connection State: ' + state);
+
+                    if (state === 'connected' || state === 'completed') {
+                        log('✅ ICE Connected - Media can flow!', 'success');
+                    } else if (state === 'failed') {
+                        log('❌ ICE Failed - Connection cannot be established', 'error');
+                        log('⚠️ TURN server may be needed!', 'error');
+                    } else if (state === 'disconnected') {
+                        log('⚠️ ICE Disconnected - Temporarily lost connection', 'error');
+                    }
+                };
+
+                // Monitor ICE gathering state
+                peerConnection.onicegatheringstatechange = () => {
+                    log('🔍 ICE Gathering State: ' + peerConnection.iceGatheringState);
+                };
+
+                // Handle connection state changes
+                peerConnection.onconnectionstatechange = () => {
+                    const state = peerConnection.connectionState;
+                    log(`Connection state: ${state}`);
+                    updateConnectionState(state);
+
+                    if (state === 'connected') {
+                        updateStatus('Call connected!', 'connected');
+                        log('✅ Call connected successfully!', 'success');
+                        document.getElementById('endBtn').style.display = 'block';
+                    } else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+                        updateStatus('Call ended', 'idle');
+                        document.getElementById('connectBtn').style.display = 'block';
+                        document.getElementById('endBtn').style.display = 'none';
+                    }
+                };
+
+                // Set remote description from offer
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(incomingOffer));
+                log('Set remote description from offer', 'success');
+                remoteDescriptionSet = true;
+
+                // Add any queued ICE candidates
+                if (pendingIceCandidates.length > 0) {
+                    log(`📋 Adding ${pendingIceCandidates.length} queued ICE candidates`);
+                    for (const candidate of pendingIceCandidates) {
+                        try {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                            log('   ✅ Queued candidate added');
+                        } catch (e) {
+                            log('   ❌ Error adding queued candidate: ' + e.message, 'error');
+                        }
+                    }
+                    pendingIceCandidates = [];
+                    log('✅ All queued candidates processed', 'success');
+                }
+
+                // Create answer
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                log('Created answer', 'success');
+
+                // Send answer to caller
+                ws.send(JSON.stringify({
+                    type: 'answer',
+                    room: ROOM_NAME,
+                    sdp: {
+                        type: answer.type,
+                        sdp: answer.sdp
+                    }
+                }));
+                log('📤 Answer sent to caller', 'success');
+
+            } catch (error) {
+                log('Error accepting call: ' + error.message, 'error');
+                updateStatus('Error', 'error');
+            }
+        }
+
+        function rejectCall() {
+            log('Rejecting call...');
+            ws.send(JSON.stringify({
+                type: 'call-rejected',
+                room: ROOM_NAME
+            }));
+            updateStatus('Call rejected', 'idle');
+            document.getElementById('callControls').style.display = 'none';
+            incomingOffer = null;
         }
 
         function endCall() {
@@ -555,21 +594,13 @@
                 log('Closed peer connection');
             }
 
-            if (ws) {
-                ws.send(JSON.stringify({
-                    type: 'leave',
-                    room: ROOM_NAME
-                }));
-                ws.close();
-            }
-
             // Clear video elements
             localVideo.srcObject = null;
             remoteVideo.srcObject = null;
             videoContainer.style.display = 'none';
 
             updateStatus('Call ended', 'idle');
-            document.getElementById('callBtn').style.display = 'block';
+            document.getElementById('connectBtn').style.display = 'block';
             document.getElementById('endBtn').style.display = 'none';
             log('Call ended', 'success');
         }
@@ -594,9 +625,10 @@
             remoteVideo.srcObject = null;
             videoContainer.style.display = 'none';
 
-            updateStatus('Call ended by mobile', 'idle');
-            document.getElementById('callBtn').style.display = 'block';
+            updateStatus('Call ended by caller', 'idle');
+            document.getElementById('connectBtn').style.display = 'block';
             document.getElementById('endBtn').style.display = 'none';
+            document.getElementById('callControls').style.display = 'none';
             log('Remote end call handled', 'success');
         }
     </script>

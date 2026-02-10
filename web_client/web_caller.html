@@ -173,7 +173,7 @@
 <body>
     <div class="container">
         <h1>📞 WebRTC Web Caller</h1>
-        <p class="subtitle">Call mobile app receiver</p>
+        <p class="subtitle">Call another web client</p>
 
         <div id="status" class="status idle">
             Ready to make calls
@@ -187,7 +187,7 @@
             </div>
             <div class="info-item">
                 <span class="info-label">Room:</span>
-                <span class="info-value">test-call</span>
+                <span class="info-value">web-test</span>
             </div>
             <div class="info-item">
                 <span class="info-label">State:</span>
@@ -198,10 +198,10 @@
         <!-- Video containers -->
         <div id="videoContainer" style="display: none; margin: 20px 0;">
             <div style="position: relative; background: #000; border-radius: 10px; overflow: hidden;">
-                <!-- Remote video (mobile) - large -->
+                <!-- Remote video - large -->
                 <video id="remoteVideo" autoplay playsinline style="width: 100%; height: 400px; object-fit: cover;"></video>
 
-                <!-- Local video (web) - picture-in-picture -->
+                <!-- Local video - picture-in-picture -->
                 <video id="localVideo" autoplay playsinline muted
                        style="position: absolute; top: 10px; right: 10px; width: 150px; height: 100px;
                               border: 2px solid white; border-radius: 8px; object-fit: cover;"></video>
@@ -209,7 +209,7 @@
         </div>
 
         <button id="callBtn" class="btn-call" onclick="makeCall()">
-            📞 Call Mobile App
+            📞 Call Web Receiver
         </button>
 
         <button id="endBtn" class="btn-end" onclick="endCall()" style="display: none;">
@@ -222,11 +222,11 @@
     <script>
         // Configuration - CHANGE THESE VALUES
         const SIGNALING_SERVER = 'ws://192.168.1.31:8080'; // Change to your server IP
-        const ROOM_NAME = 'test-call';
+        const ROOM_NAME = 'web-test';
 
         const ICE_SERVERS = {
             iceServers: [
-                { urls: 'stun:192.168.1.31:3478' },
+                { urls: 'stun:stun.l.google.com:19302' },
                 {
                     urls: [
                         'turn:192.168.1.31:3478?transport=udp',
@@ -333,7 +333,7 @@
                         log(`Added local ${track.kind} track`);
                     });
 
-                    // Handle remote tracks (incoming video from mobile)
+                    // Handle remote tracks (incoming video from receiver)
                     peerConnection.ontrack = (event) => {
                         log('🎥 Received remote track: ' + event.track.kind, 'success');
                         log('   - Track ID: ' + event.track.id);
@@ -414,7 +414,7 @@
                     await peerConnection.setLocalDescription(offer);
                     log('Created offer', 'success');
 
-                    // Send offer to mobile app
+                    // Send offer to receiver
                     ws.send(JSON.stringify({
                         type: 'offer',
                         room: ROOM_NAME,
@@ -423,8 +423,8 @@
                             sdp: offer.sdp
                         }
                     }));
-                    log('📤 Offer sent to mobile app', 'success');
-                    updateStatus('Waiting for mobile app to answer...', 'connecting');
+                    log('📤 Offer sent to receiver', 'success');
+                    updateStatus('Waiting for receiver to answer...', 'connecting');
 
                     document.getElementById('callBtn').style.display = 'none';
                     document.getElementById('endBtn').style.display = 'block';
@@ -440,7 +440,7 @@
                             break;
 
                         case 'answer':
-                            log('📥 Received answer from mobile app', 'success');
+                            log('📥 Received answer from receiver', 'success');
                             await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
                             log('Set remote description', 'success');
                             remoteDescriptionSet = true;
@@ -461,21 +461,10 @@
                             }
                             break;
 
-                        case 'call-accepted':
-                            log('✅ Mobile accepted the call!', 'success');
-                            updateStatus('Mobile accepted - Connecting...', 'connecting');
-                            break;
-
                         case 'call-ended':
-                            log('📵 Mobile ended the call', 'error');
-                            updateStatus('Call ended by mobile', 'error');
+                            log('📵 Receiver ended the call', 'error');
+                            updateStatus('Call ended by receiver', 'error');
                             handleRemoteEndCall();
-                            break;
-
-                        case 'call-rejected':
-                            log('❌ Mobile rejected the call', 'error');
-                            updateStatus('Call rejected by mobile', 'error');
-                            endCall();
                             break;
 
                         case 'ice-candidate':
@@ -594,7 +583,7 @@
             remoteVideo.srcObject = null;
             videoContainer.style.display = 'none';
 
-            updateStatus('Call ended by mobile', 'idle');
+            updateStatus('Call ended by receiver', 'idle');
             document.getElementById('callBtn').style.display = 'block';
             document.getElementById('endBtn').style.display = 'none';
             log('Remote end call handled', 'success');
