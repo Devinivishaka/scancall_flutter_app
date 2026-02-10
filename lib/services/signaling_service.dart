@@ -4,6 +4,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
+import 'package:vibration/vibration.dart';
 class SignalingService {
 
   static const String _signalingServerUrl = 'ws://10.0.2.2:8080';
@@ -55,6 +56,9 @@ class SignalingService {
 
   // Flag to track ringtone state
   bool _isRingtonePlaying = false;
+
+  // Flag to track vibration state
+  bool _isVibrating = false;
 
   // Stream controllers for callbacks
   final _onCallStateChanged = StreamController<CallState>.broadcast();
@@ -681,7 +685,10 @@ class SignalingService {
         volume: 1.0,
       );
 
-      print('🔔 System ringtone playing');
+      // Start vibration pattern
+      await _startVibration();
+
+      print('🔔 System ringtone and vibration playing');
     } catch (e) {
       print('Error playing ringtone: $e');
       _isRingtonePlaying = false;
@@ -697,14 +704,61 @@ class SignalingService {
         _isRingtonePlaying = false;
         print('🔕 Ringtone stopped');
       }
+
+      // Stop vibration
+      await _stopVibration();
     } catch (e) {
       print('Error stopping ringtone: $e');
     }
   }
 
+  /// Start vibration pattern for incoming call
+  Future<void> _startVibration() async {
+    try {
+      // Check if device supports vibration
+      bool? hasVibrator = await Vibration.hasVibrator();
+      if (hasVibrator != true) {
+        print('Device does not support vibration');
+        return;
+      }
+
+      if (_isVibrating) {
+        print('Vibration already active');
+        return;
+      }
+
+      _isVibrating = true;
+
+      // Create a repeating vibration pattern: 500ms on, 1000ms off, 500ms on, 1000ms off
+      // Pattern: [wait, vibrate, wait, vibrate, ...]
+      await Vibration.vibrate(
+        pattern: [0, 500, 1000, 500, 1000],
+        repeat: 0, // Repeat from index 0 (endless loop)
+      );
+
+      print('📳 Vibration started');
+    } catch (e) {
+      print('Error starting vibration: $e');
+      _isVibrating = false;
+    }
+  }
+
+  /// Stop vibration
+  Future<void> _stopVibration() async {
+    try {
+      if (_isVibrating) {
+        await Vibration.cancel();
+        _isVibrating = false;
+        print('📳 Vibration stopped');
+      }
+    } catch (e) {
+      print('Error stopping vibration: $e');
+    }
+  }
+
   /// Dispose resources
   void dispose() {
-    _stopRingtone(); // Stop ringtone if playing
+    _stopRingtone(); // Stop ringtone and vibration if playing
     _localStream?.getTracks().forEach((track) => track.stop());
     _localStream?.dispose();
     _remoteStream?.dispose();

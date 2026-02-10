@@ -47,6 +47,9 @@ dependencies:
   # Ringtone player (system default)
   flutter_ringtone_player: ^4.0.0+2
 
+  # Vibration support
+  vibration: ^2.0.0
+
   # HTTP client for REST API calls
   http: ^1.2.2
 
