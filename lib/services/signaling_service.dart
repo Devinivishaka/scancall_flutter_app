@@ -4,12 +4,8 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
-
-/// Signaling service for WebRTC communication - RECEIVER MODE
-/// This app waits for incoming calls from web clients
 class SignalingService {
-  // Hard-coded WebSocket server URL
-  // TODO: Replace with your actual signaling server URL
+
   static const String _signalingServerUrl = 'ws://10.0.2.2:8080';
 
   // Hard-coded room name
