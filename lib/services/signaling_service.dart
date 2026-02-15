@@ -7,7 +7,7 @@ import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import 'package:vibration/vibration.dart';
 class SignalingService {
 
-  static const String _signalingServerUrl = 'ws://10.0.2.2:8080';
+  static const String _signalingServerUrl = 'ws://10.0.2.2:8080/ws';
 
   // Hard-coded room name
   static const String _roomName = 'test-call';

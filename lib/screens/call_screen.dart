@@ -16,6 +16,7 @@ class _CallScreenState extends State<CallScreen> {
   String _statusText = 'Initializing...';
   bool _isInitialized = false;
   bool _showIncomingCallUI = false;
+  String? _errorMessage; // Store error messages to display on screen
 
   // Video renderers
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
@@ -45,6 +46,10 @@ class _CallScreenState extends State<CallScreen> {
       });
     } catch (e) {
       print('❌ Error initializing renderers: $e');
+      setState(() {
+        _errorMessage = 'Failed to initialize video renderers: $e';
+        _callState = CallState.error;
+      });
     }
   }
 
@@ -147,7 +152,11 @@ class _CallScreenState extends State<CallScreen> {
       print('Service initialized successfully - Ready to receive calls');
     } catch (e) {
       print('Error initializing service: $e');
-      _showErrorDialog('Failed to initialize: $e');
+      setState(() {
+        _errorMessage = 'Failed to initialize service: $e';
+        _callState = CallState.error;
+        _statusText = 'Initialization error';
+      });
     }
   }
 
@@ -184,7 +193,11 @@ class _CallScreenState extends State<CallScreen> {
       await _signalingService.acceptCall();
     } catch (e) {
       print('Error accepting call: $e');
-      _showErrorDialog('Failed to accept call: $e');
+      setState(() {
+        _errorMessage = 'Failed to accept call: $e';
+        _callState = CallState.error;
+        _showIncomingCallUI = false;
+      });
     }
   }
 
@@ -205,7 +218,11 @@ class _CallScreenState extends State<CallScreen> {
       });
     } catch (e) {
       print('Error rejecting call: $e');
-      _showErrorDialog('Failed to reject call: $e');
+      setState(() {
+        _errorMessage = 'Failed to reject call: $e';
+        _callState = CallState.error;
+        _showIncomingCallUI = false;
+      });
     }
   }
 
@@ -222,8 +239,8 @@ class _CallScreenState extends State<CallScreen> {
       });
     } catch (e) {
       print('Error connecting: $e');
-      _showErrorDialog('Failed to connect: $e');
       setState(() {
+        _errorMessage = 'Failed to connect: $e';
         _callState = CallState.error;
         _statusText = 'Connection error';
       });
@@ -257,7 +274,10 @@ class _CallScreenState extends State<CallScreen> {
       });
     } catch (e) {
       print('Error ending call: $e');
-      _showErrorDialog('Failed to end call: $e');
+      setState(() {
+        _errorMessage = 'Failed to end call: $e';
+        _callState = CallState.error;
+      });
     }
   }
 
@@ -426,6 +446,55 @@ class _CallScreenState extends State<CallScreen> {
               ),
             ),
           ),
+
+        // Error message display during call
+        if (_errorMessage != null)
+          Positioned(
+            bottom: 120,
+            left: 20,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.white,
+                  width: 2,
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.error_outline,
+                    color: Colors.white,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _errorMessage!,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () {
+                      setState(() {
+                        _errorMessage = null;
+                      });
+                    },
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -581,6 +650,68 @@ class _CallScreenState extends State<CallScreen> {
             ),
           ),
           const SizedBox(height: 60),
+
+          // Error message display
+          if (_errorMessage != null)
+            Container(
+              margin: const EdgeInsets.only(bottom: 20),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.red,
+                  width: 2,
+                ),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.error_outline,
+                        color: Colors.red,
+                        size: 24,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Error',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.red),
+                        onPressed: () {
+                          setState(() {
+                            _errorMessage = null;
+                            if (_callState == CallState.error) {
+                              _callState = CallState.idle;
+                              _connectAndWait();
+                            }
+                          });
+                        },
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _errorMessage!,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: Colors.red,
+                    ),
+                    textAlign: TextAlign.left,
+                  ),
+                ],
+              ),
+            ),
 
           // Info text
           if (_callState == CallState.waiting && _isInitialized)
