@@ -13,18 +13,35 @@ class SignalingService {
   static const String _roomName = 'test-call';
 
   // Hard-coded TURN/STUN configuration
-  // For LOCAL testing (same WiFi): Only STUN is needed
-  // For PRODUCTION (different networks): Add TURN server
+  //
+  // CONNECTION METHODS (in order of preference):
+  // 1. HOST candidates: Direct connection on same local network (NO TURN NEEDED)
+  //    - Used when both devices are on same WiFi/LAN
+  //    - Fastest and most reliable
+  //    - Your current setup is likely using this!
+  //
+  // 2. SRFLX candidates: Connection via STUN server (NO TURN NEEDED)
+  //    - Used when devices can connect directly but need to know public IP
+  //    - STUN helps discover the public IP address
+  //    - Still a direct peer-to-peer connection
+  //
+  // 3. RELAY candidates: Connection via TURN server (TURN NEEDED)
+  //    - Only used when direct connection is impossible
+  //    - Required when behind strict NAT/firewalls
+  //    - More latency and uses TURN server bandwidth
+  //
+  // If your call works without TURN server running, you're using HOST or SRFLX!
+  // Check the logs to see which ICE candidate types are being used.
   final Map<String, dynamic> _iceServers = {
     'iceServers': [
       // Local STUN server
-      {'urls': 'stun:10.0.2.2:3478'},
+      {'urls': 'stun:13.127.40.12:3478'},
 
       // Local TURN server
       {
         'urls': [
-          'turn:10.0.2.2:3478?transport=udp',
-          'turn:10.0.2.2:3478?transport=tcp',
+          'turn:13.127.40.12:3478?transport=udp',
+          'turn:13.127.40.12:3478?transport=tcp',
         ],
         'username': 'myuser',
         'credential': 'mypassword',
@@ -103,7 +120,20 @@ class SignalingService {
 
       // Set up peer connection callbacks
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
-        print('🧊 ICE Candidate generated: ${candidate.candidate}');
+        final candidateStr = candidate.candidate ?? '';
+        print('🧊 ICE Candidate generated: $candidateStr');
+
+        // Log candidate type for debugging
+        if (candidateStr.contains('typ host')) {
+          print('   ✅ Type: HOST - Direct local network connection (no TURN needed!)');
+        } else if (candidateStr.contains('typ srflx')) {
+          print('   ✅ Type: SRFLX - STUN server reflexive (using public IP, no TURN needed!)');
+        } else if (candidateStr.contains('typ relay')) {
+          print('   🔄 Type: RELAY - Using TURN server (different networks)');
+        } else if (candidateStr.contains('typ prflx')) {
+          print('   ✅ Type: PRFLX - Peer reflexive (discovered during connectivity checks)');
+        }
+
         _sendIceCandidate(candidate);
       };
 
@@ -116,16 +146,21 @@ class SignalingService {
             break;
           case RTCIceConnectionState.RTCIceConnectionStateChecking:
             print('   ICE: Checking - Testing connectivity');
+            print('   ℹ️  Trying: HOST → SRFLX → RELAY (in order of preference)');
             break;
           case RTCIceConnectionState.RTCIceConnectionStateConnected:
             print('   ✅ ICE: Connected - Media can flow!');
+            print('   ℹ️  Connection established using one of: HOST, SRFLX, or RELAY candidates');
+            print('   ℹ️  If TURN server is stopped and this works, you\'re using HOST/SRFLX!');
             break;
           case RTCIceConnectionState.RTCIceConnectionStateCompleted:
             print('   ✅ ICE: Completed - All checks done');
             break;
           case RTCIceConnectionState.RTCIceConnectionStateFailed:
             print('   ❌ ICE: Failed - Connection cannot be established');
-            print('   ⚠️ TURN server may be needed!');
+            print('   ⚠️  None of the connection methods worked (HOST, SRFLX, RELAY)');
+            print('   ⚠️  If you need TURN but it\'s down, this will fail!');
+            print('   ℹ️  Check: 1) Same network? 2) STUN reachable? 3) TURN needed & running?');
             break;
           case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
             print('   ⚠️ ICE: Disconnected - Temporarily lost connection');
@@ -508,11 +543,13 @@ class SignalingService {
       // Print candidate type for debugging
       final candidateStr = candidateMap['candidate'] as String;
       if (candidateStr.contains('typ host')) {
-        print('   - Type: host (local network)');
+        print('   ✅ Type: HOST - Remote is on local network (TURN not needed!)');
       } else if (candidateStr.contains('typ srflx')) {
-        print('   - Type: srflx (STUN - public IP)');
+        print('   ✅ Type: SRFLX - Remote using STUN (TURN not needed!)');
       } else if (candidateStr.contains('typ relay')) {
-        print('   - Type: relay (TURN - relayed)');
+        print('   🔄 Type: RELAY - Remote using TURN server');
+      } else if (candidateStr.contains('typ prflx')) {
+        print('   ✅ Type: PRFLX - Peer reflexive candidate');
       }
     } catch (e) {
       print('❌ Error handling ICE candidate: $e');

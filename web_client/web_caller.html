@@ -221,7 +221,7 @@
 
     <script>
         // Configuration - CHANGE THESE VALUES
-        const SIGNALING_SERVER = 'ws://192.168.1.31:8080'; // Change to your server IP
+        const SIGNALING_SERVER = 'ws://172.20.10.2:8080/ws'; // Change to your server IP
         const ROOM_NAME = 'web-test';
 
         const ICE_SERVERS = {
@@ -229,8 +229,8 @@
                 { urls: 'stun:stun.l.google.com:19302' },
                 {
                     urls: [
-                        'turn:192.168.1.31:3478?transport=udp',
-                        'turn:192.168.1.31:3478?transport=tcp'
+                        'turn:172.20.10.2:3478?transport=udp',
+                        'turn:172.20.10.2:3478?transport=tcp'
                     ],
                     username: 'myuser', //  Change to your actual TURN username
                     credential: 'mypassword' //  Change to your actual TURN password
