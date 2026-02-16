@@ -27,8 +27,14 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void initState() {
     super.initState();
-    _initializeRenderers();
-    _initializeService();
+    // Start initialization sequentially: first renderers, then the service
+    _start();
+  }
+
+  // Start helper: await renderers before initializing the signaling service to avoid races
+  Future<void> _start() async {
+    await _initializeRenderers();
+    await _initializeService();
   }
 
   Future<void> _initializeRenderers() async {
@@ -74,8 +80,16 @@ class _CallScreenState extends State<CallScreen> {
           if (state == CallState.waiting) {
             _showIncomingCallUI = false;
             // Clear video renderers
-            _localRenderer.srcObject = null;
-            _remoteRenderer.srcObject = null;
+            try {
+              _localRenderer.srcObject = null;
+            } catch (e) {
+              print('⚠️ Could not clear local renderer srcObject: $e');
+            }
+            try {
+              _remoteRenderer.srcObject = null;
+            } catch (e) {
+              print('⚠️ Could not clear remote renderer srcObject: $e');
+            }
           }
         });
       });
@@ -93,7 +107,7 @@ class _CallScreenState extends State<CallScreen> {
       });
 
       // Listen to remote stream (incoming video)
-      _signalingService.onRemoteStream.listen((stream) {
+      _signalingService.onRemoteStream.listen((stream) async {
         print('🎥 Remote stream received in UI');
         print('   - Video tracks: ${stream.getVideoTracks().length}');
         print('   - Audio tracks: ${stream.getAudioTracks().length}');
@@ -104,10 +118,29 @@ class _CallScreenState extends State<CallScreen> {
           track.enabled = true;
         }
 
-        setState(() {
-          _remoteRenderer.srcObject = stream;
-          print('   ✅ Remote renderer updated with stream');
-        });
+        // Make sure renderer is initialized before assigning the stream
+        if (!_remoteVideoInitialized) {
+          try {
+            print('⏳ Remote renderer not initialized yet - initializing now...');
+            await _remoteRenderer.initialize();
+            setState(() {
+              _remoteVideoInitialized = true;
+            });
+            print('✅ Remote renderer initialized (late)');
+          } catch (e) {
+            print('❌ Failed to initialize remote renderer: $e');
+            return;
+          }
+        }
+
+        try {
+          setState(() {
+            _remoteRenderer.srcObject = stream;
+            print('   ✅ Remote renderer updated with stream');
+          });
+        } catch (e) {
+          print('⚠️ Could not set remote renderer srcObject: $e');
+        }
 
         // Force a rebuild after a short delay to ensure video shows
         Future.delayed(const Duration(milliseconds: 100), () {
@@ -118,7 +151,7 @@ class _CallScreenState extends State<CallScreen> {
       });
 
       // Listen to local stream (our video)
-      _signalingService.onLocalStream.listen((stream) {
+      _signalingService.onLocalStream.listen((stream) async {
         print('📹 Local stream received in UI');
         print('   - Video tracks: ${stream.getVideoTracks().length}');
         print('   - Audio tracks: ${stream.getAudioTracks().length}');
@@ -129,10 +162,29 @@ class _CallScreenState extends State<CallScreen> {
           track.enabled = true;
         }
 
-        setState(() {
-          _localRenderer.srcObject = stream;
-          print('   ✅ Local renderer updated with stream');
-        });
+        // Make sure renderer is initialized before assigning the stream
+        if (!_localVideoInitialized) {
+          try {
+            print('⏳ Local renderer not initialized yet - initializing now...');
+            await _localRenderer.initialize();
+            setState(() {
+              _localVideoInitialized = true;
+            });
+            print('✅ Local renderer initialized (late)');
+          } catch (e) {
+            print('❌ Failed to initialize local renderer: $e');
+            return;
+          }
+        }
+
+        try {
+          setState(() {
+            _localRenderer.srcObject = stream;
+            print('   ✅ Local renderer updated with stream');
+          });
+        } catch (e) {
+          print('⚠️ Could not set local renderer srcObject: $e');
+        }
 
         // Force a rebuild after a short delay to ensure video shows
         Future.delayed(const Duration(milliseconds: 100), () {

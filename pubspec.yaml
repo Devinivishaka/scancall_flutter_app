@@ -53,6 +53,17 @@ dependencies:
   # HTTP client for REST API calls
   http: ^1.2.2
 
+  # Firebase core and messaging
+  firebase_core: ^4.4.0
+
+  # Firebase Messaging for push notifications
+  firebase_messaging: ^16.1.1
+
+  # CallKit incoming for call UI
+  flutter_callkit_incoming: ^3.0.0
+
+
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
