@@ -1,0 +1,7 @@
+# Add this to your .gitignore to keep sensitive files secure
+service-account-key.json
+.env
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

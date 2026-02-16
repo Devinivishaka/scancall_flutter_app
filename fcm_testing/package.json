@@ -1,0 +1,27 @@
+{
+  "name": "scancall-fcm-testing",
+  "version": "1.0.0",
+  "description": "FCM testing suite for ScanCall VoIP Flutter app",
+  "main": "fcm-test-script.js",
+  "scripts": {
+    "test": "node fcm-test-script.js",
+    "test-call": "node fcm-test-script.js call",
+    "test-cancel": "node fcm-test-script.js cancel"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "firebase-admin": "^12.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "keywords": [
+    "fcm",
+    "push-notifications",
+    "webrtc",
+    "voip",
+    "testing"
+  ],
+  "author": "ScanCall Team",
+  "license": "MIT"
+}
