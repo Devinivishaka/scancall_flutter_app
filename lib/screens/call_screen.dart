@@ -27,35 +27,82 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void initState() {
     super.initState();
-    // Start initialization sequentially: first renderers, then the service
-    _start();
+    // Initialize only the signaling service, not the renderers yet
+    _initializeService();
   }
 
-  // Start helper: await renderers before initializing the signaling service to avoid races
-  Future<void> _start() async {
-    await _initializeRenderers();
-    await _initializeService();
-  }
-
+  /// Initialize video renderers only when needed (lazy initialization)
   Future<void> _initializeRenderers() async {
+    // Skip if already initialized
+    if (_localVideoInitialized && _remoteVideoInitialized) {
+      return;
+    }
+
     try {
-      await _localRenderer.initialize();
-      await _remoteRenderer.initialize();
+      if (!_localVideoInitialized) {
+        await _localRenderer.initialize();
+        setState(() {
+          _localVideoInitialized = true;
+        });
+      }
+
+      if (!_remoteVideoInitialized) {
+        await _remoteRenderer.initialize();
+        setState(() {
+          _remoteVideoInitialized = true;
+        });
+      }
 
       print('✅ Video renderers initialized');
       print('   - Local renderer ready: ${_localRenderer.renderVideo}');
       print('   - Remote renderer ready: ${_remoteRenderer.renderVideo}');
-
-      setState(() {
-        _localVideoInitialized = true;
-        _remoteVideoInitialized = true;
-      });
     } catch (e) {
       print('❌ Error initializing renderers: $e');
       setState(() {
         _errorMessage = 'Failed to initialize video renderers: $e';
         _callState = CallState.error;
       });
+    }
+  }
+
+  /// Dispose video renderers to stop EGL logging when not in a call
+  Future<void> _disposeRenderers() async {
+    try {
+      // Clear srcObject first
+      if (_localVideoInitialized) {
+        try {
+          _localRenderer.srcObject = null;
+        } catch (e) {
+          print('⚠️ Could not clear local renderer srcObject: $e');
+        }
+      }
+
+      if (_remoteVideoInitialized) {
+        try {
+          _remoteRenderer.srcObject = null;
+        } catch (e) {
+          print('⚠️ Could not clear remote renderer srcObject: $e');
+        }
+      }
+
+      // Dispose renderers
+      if (_localVideoInitialized) {
+        await _localRenderer.dispose();
+        setState(() {
+          _localVideoInitialized = false;
+        });
+      }
+
+      if (_remoteVideoInitialized) {
+        await _remoteRenderer.dispose();
+        setState(() {
+          _remoteVideoInitialized = false;
+        });
+      }
+
+      print('✅ Video renderers disposed - EGL logging stopped');
+    } catch (e) {
+      print('❌ Error disposing renderers: $e');
     }
   }
 
@@ -72,24 +119,16 @@ class _CallScreenState extends State<CallScreen> {
 
           // Hide incoming call UI when call starts or ends
           if (state == CallState.connecting ||
-              state == CallState.connected) {
+              state == CallState.connected ||
+              state == CallState.ended) {
             _showIncomingCallUI = false;
           }
 
-          // Clear video when call ends and we're back to waiting
-          if (state == CallState.waiting) {
+          // Clear video when call ends or we're back to waiting
+          if (state == CallState.ended || state == CallState.waiting) {
             _showIncomingCallUI = false;
-            // Clear video renderers
-            try {
-              _localRenderer.srcObject = null;
-            } catch (e) {
-              print('⚠️ Could not clear local renderer srcObject: $e');
-            }
-            try {
-              _remoteRenderer.srcObject = null;
-            } catch (e) {
-              print('⚠️ Could not clear remote renderer srcObject: $e');
-            }
+            // Clear and dispose video renderers to stop EGL logging
+            _disposeRenderers();
           }
         });
       });
@@ -118,20 +157,8 @@ class _CallScreenState extends State<CallScreen> {
           track.enabled = true;
         }
 
-        // Make sure renderer is initialized before assigning the stream
-        if (!_remoteVideoInitialized) {
-          try {
-            print('⏳ Remote renderer not initialized yet - initializing now...');
-            await _remoteRenderer.initialize();
-            setState(() {
-              _remoteVideoInitialized = true;
-            });
-            print('✅ Remote renderer initialized (late)');
-          } catch (e) {
-            print('❌ Failed to initialize remote renderer: $e');
-            return;
-          }
-        }
+        // Initialize renderers if not already done
+        await _initializeRenderers();
 
         try {
           setState(() {
@@ -162,20 +189,8 @@ class _CallScreenState extends State<CallScreen> {
           track.enabled = true;
         }
 
-        // Make sure renderer is initialized before assigning the stream
-        if (!_localVideoInitialized) {
-          try {
-            print('⏳ Local renderer not initialized yet - initializing now...');
-            await _localRenderer.initialize();
-            setState(() {
-              _localVideoInitialized = true;
-            });
-            print('✅ Local renderer initialized (late)');
-          } catch (e) {
-            print('❌ Failed to initialize local renderer: $e');
-            return;
-          }
-        }
+        // Initialize renderers if not already done
+        await _initializeRenderers();
 
         try {
           setState(() {
@@ -351,8 +366,13 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   void dispose() {
-    _localRenderer.dispose();
-    _remoteRenderer.dispose();
+    // Only dispose renderers if they were initialized
+    if (_localVideoInitialized) {
+      _localRenderer.dispose();
+    }
+    if (_remoteVideoInitialized) {
+      _remoteRenderer.dispose();
+    }
     _signalingService.dispose();
     super.dispose();
   }

@@ -612,6 +612,9 @@ class SignalingService {
       _isReconnecting = true;
       print('Ending call...');
 
+      // Stop ringtone and vibration if playing
+      await _stopRingtone();
+
       // Notify the other side that we ended the call
       if (_channel != null) {
         _sendMessage({
@@ -620,33 +623,45 @@ class SignalingService {
         });
       }
 
+      // Clear pending offer if any
+      _pendingOffer = null;
+      _pendingIceCandidates.clear();
+      _remoteDescriptionSet = false;
+
+      // Emit state change to notify UI that call ended
+      _onCallStateChanged.add(CallState.ended);
+
       // Stop and dispose local stream
-      _localStream?.getTracks().forEach((track) {
-        track.stop();
-      });
-      _localStream?.dispose();
-      _localStream = null;
+      if (_localStream != null) {
+        _localStream!.getTracks().forEach((track) {
+          track.stop();
+        });
+        _localStream!.dispose();
+        _localStream = null;
+      }
 
       // Dispose remote stream
-      _remoteStream?.dispose();
-      _remoteStream = null;
+      if (_remoteStream != null) {
+        _remoteStream!.dispose();
+        _remoteStream = null;
+      }
 
       // Close peer connection
-      await _peerConnection?.close();
-      _peerConnection = null;
+      if (_peerConnection != null) {
+        await _peerConnection!.close();
+        _peerConnection = null;
+      }
 
-      // Close WebSocket
-      await _channel?.sink.close();
-      _channel = null;
+      // Don't close WebSocket - we'll reuse it for the next call
+      // This prevents unnecessary reconnection overhead
 
-      print('Call ended - Reconnecting...');
+      print('Call ended - Cleaning up...');
 
-      // Wait a bit before reconnecting
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Wait 2 seconds to show "Call Ended" message to user
+      await Future.delayed(const Duration(seconds: 2));
 
-      // Reinitialize and reconnect
-      await initialize();
-      await connectAndWaitForCalls();
+      // Set state back to waiting for next call
+      _onCallStateChanged.add(CallState.waiting);
 
       _isReconnecting = false;
       print('Ready for next call');
@@ -668,32 +683,47 @@ class SignalingService {
       _isReconnecting = true;
       print('Handling remote end call...');
 
-      // Stop and dispose streams
-      _localStream?.getTracks().forEach((track) {
-        track.stop();
-      });
-      _localStream?.dispose();
-      _localStream = null;
+      // Stop ringtone and vibration if playing
+      await _stopRingtone();
 
-      _remoteStream?.dispose();
-      _remoteStream = null;
+      // Clear pending offer if any
+      _pendingOffer = null;
+      _pendingIceCandidates.clear();
+      _remoteDescriptionSet = false;
+
+      // Emit state change to notify UI that call ended
+      _onCallStateChanged.add(CallState.ended);
+
+      // Stop and dispose streams
+      if (_localStream != null) {
+        _localStream!.getTracks().forEach((track) {
+          track.stop();
+        });
+        _localStream!.dispose();
+        _localStream = null;
+      }
+
+      if (_remoteStream != null) {
+        _remoteStream!.dispose();
+        _remoteStream = null;
+      }
 
       // Close peer connection
-      await _peerConnection?.close();
-      _peerConnection = null;
+      if (_peerConnection != null) {
+        await _peerConnection!.close();
+        _peerConnection = null;
+      }
 
-      // Close WebSocket
-      await _channel?.sink.close();
-      _channel = null;
+      // Don't close WebSocket - we'll reuse it for the next call
+      // This prevents unnecessary reconnection overhead
 
-      print('Remote end call handled - Reconnecting...');
+      print('Remote end call handled - Cleaning up...');
 
-      // Wait a bit before reconnecting
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Wait 2 seconds to show "Call Ended" message to user
+      await Future.delayed(const Duration(seconds: 2));
 
-      // Reinitialize and reconnect
-      await initialize();
-      await connectAndWaitForCalls();
+      // Set state back to waiting for next call
+      _onCallStateChanged.add(CallState.waiting);
 
       _isReconnecting = false;
       print('Ready for next call');
