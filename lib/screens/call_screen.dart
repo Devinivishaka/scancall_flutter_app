@@ -4,7 +4,10 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class CallScreen extends StatefulWidget {
-  const CallScreen({super.key});
+  final String? callId;
+  final String? callerName;
+
+  const CallScreen({super.key, this.callId, this.callerName});
 
   @override
   State<CallScreen> createState() => _CallScreenState();
@@ -16,7 +19,7 @@ class _CallScreenState extends State<CallScreen> {
   String _statusText = 'Initializing...';
   bool _isInitialized = false;
   bool _showIncomingCallUI = false;
-  String? _errorMessage; // Store error messages to display on screen
+  String? _errorMessage;
 
   // Video renderers
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
@@ -27,7 +30,7 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void initState() {
     super.initState();
-    // Start initialization sequentially: first renderers, then the service
+    print('📱 CallScreen opened - callId: ${widget.callId}, caller: ${widget.callerName}');
     _start();
   }
 

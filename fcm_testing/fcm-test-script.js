@@ -51,28 +51,33 @@ async function sendIncomingCall(fcmToken, callId, callerName, callerAvatar = nul
   console.log(`   Caller: ${callerName}`);
   console.log(`   FCM Token: ${fcmToken.substring(0, 20)}...`);
 
+  // CRITICAL: This MUST be a data-only message (no 'notification' field).
+  // Data-only messages always trigger the background handler in Flutter,
+  // which then shows the CallKit incoming call UI.
+  // If you add a 'notification' field, Android shows a system notification
+  // instead of triggering the background handler, and CallKit won't work.
   const message = {
     token: fcmToken,
     data: {
       type: 'incoming_call',
       callId: callId,
       callerName: callerName,
-      ...(callerAvatar && { callerAvatar })
+      callerAvatar: callerAvatar || '',
+      timestamp: Date.now().toString(),
     },
     android: {
       priority: 'high',
-      notification: {
-        channelId: 'incoming_call_channel'
-      }
+      // NO notification block here - data-only is required for CallKit!
+      ttl: 60000, // 60 second TTL
     },
     apns: {
       headers: {
-        'apns-priority': '10'
+        'apns-priority': '10',
+        'apns-push-type': 'background',
       },
       payload: {
         aps: {
-          contentAvailable: true,
-          category: 'CALL_CATEGORY'
+          'content-available': 1,
         }
       }
     }
