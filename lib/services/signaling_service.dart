@@ -11,6 +11,18 @@ class SignalingService {
 
   // Hard-coded room name
   static const String _roomName = 'test-call';
+  
+  // Dynamic room name (overrides _roomName if set)
+  String? _dynamicRoom;
+  
+  // Flag to control reconnection behavior (false for FCM calls)
+  bool _shouldReconnectAfterEnd = true;
+  
+  // Flag to control ringtone (false for FCM calls where user already accepted)
+  bool _shouldPlayRingtone = true;
+  
+  // Get the current room name (dynamic or default)
+  String get currentRoom => _dynamicRoom ?? _roomName;
 
   // Hard-coded TURN/STUN configuration
   //
@@ -246,8 +258,22 @@ class SignalingService {
   }
 
   /// Connect to the signaling server and wait for incoming calls
-  Future<void> connectAndWaitForCalls() async {
+  /// [room] - Optional room/call ID to join. If null, uses default room.
+  Future<void> connectAndWaitForCalls({String? room}) async {
     try {
+      // Set the dynamic room if provided
+      if (room != null) {
+        _dynamicRoom = room;
+        _shouldReconnectAfterEnd = false; // FCM call - don't reconnect after end
+        _shouldPlayRingtone = false; // FCM call - don't play ringtone (user already accepted)
+        print('🏠 Using dynamic room: $room (FCM mode - no auto-reconnect, no ringtone)');
+      } else {
+        _dynamicRoom = null;
+        _shouldReconnectAfterEnd = true; // Standard mode - reconnect after end
+        _shouldPlayRingtone = true; // Standard mode - play ringtone on incoming call
+        print('🏠 Using default room: $_roomName (Standard mode - auto-reconnect, with ringtone)');
+      }
+      
       _onCallStateChanged.add(CallState.waiting);
 
       _channel = WebSocketChannel.connect(Uri.parse(_signalingServerUrl));
@@ -279,10 +305,10 @@ class SignalingService {
       // Join the room
       _sendMessage({
         'type': 'join',
-        'room': _roomName,
+        'room': currentRoom,
       });
 
-      print('Connected to signaling server - Waiting for calls...');
+      print('Connected to signaling server - Waiting for calls in room: $currentRoom');
     } catch (e) {
       print('Error connecting to signaling server: $e');
       _onCallStateChanged.add(CallState.error);
@@ -318,8 +344,12 @@ class SignalingService {
           _onCallStateChanged.add(CallState.incoming);
           _onIncomingCall.add(null); // Notify UI
 
-          // Play ringtone
-          await _playRingtone();
+          // Play ringtone only if enabled (not for FCM calls where user already accepted)
+          if (_shouldPlayRingtone) {
+            await _playRingtone();
+          } else {
+            print('🔇 Skipping ringtone (FCM mode - user already accepted via CallKit)');
+          }
           break;
         case 'ice-candidate':
           await _handleIceCandidate(data['candidate']);
@@ -340,7 +370,7 @@ class SignalingService {
           _onCallStateChanged.add(CallState.ended);
           break;
         case 'joined':
-          print('Joined room: $_roomName - Ready to receive calls');
+          print('✅ Joined room: $currentRoom - Ready to receive calls');
           break;
         case 'error':
           final errorMsg = data['message'] ?? data['error'] ?? 'Unknown error occurred';
@@ -417,7 +447,7 @@ class SignalingService {
       // Notify the other side that we accepted
       _sendMessage({
         'type': 'call-accepted',
-        'room': _roomName,
+        'room': currentRoom,
       });
 
       // Now handle the offer and create answer
@@ -448,7 +478,7 @@ class SignalingService {
       // Send rejection message to caller
       _sendMessage({
         'type': 'reject',
-        'room': _roomName,
+        'room': currentRoom,
       });
 
       // Reset to waiting state
@@ -531,7 +561,7 @@ class SignalingService {
       // Send answer back to caller
       _sendMessage({
         'type': 'answer',
-        'room': _roomName,
+        'room': currentRoom,
         'sdp': {
           'type': answer.type,
           'sdp': answer.sdp,
@@ -612,7 +642,7 @@ class SignalingService {
   void _sendIceCandidate(RTCIceCandidate candidate) {
     _sendMessage({
       'type': 'ice-candidate',
-      'room': _roomName,
+      'room': currentRoom,
       'candidate': {
         'candidate': candidate.candidate,
         'sdpMid': candidate.sdpMid,
@@ -643,7 +673,7 @@ class SignalingService {
       if (_channel != null) {
         _sendMessage({
           'type': 'call-ended',
-          'room': _roomName,
+          'room': currentRoom,
         });
       }
 
@@ -666,17 +696,24 @@ class SignalingService {
       await _channel?.sink.close();
       _channel = null;
 
-      print('Call ended - Reconnecting...');
+      // Check if we should reconnect (standard mode) or just clean up (FCM mode)
+      if (_shouldReconnectAfterEnd) {
+        print('Call ended - Reconnecting (standard mode)...');
 
-      // Wait a bit before reconnecting
-      await Future.delayed(const Duration(milliseconds: 500));
+        // Wait a bit before reconnecting
+        await Future.delayed(const Duration(milliseconds: 500));
 
-      // Reinitialize and reconnect
-      await initialize();
-      await connectAndWaitForCalls();
+        // Reinitialize and reconnect
+        await initialize();
+        await connectAndWaitForCalls();
 
-      _isReconnecting = false;
-      print('Ready for next call');
+        _isReconnecting = false;
+        print('Ready for next call');
+      } else {
+        print('Call ended - Not reconnecting (FCM mode)');
+        _onCallStateChanged.add(CallState.ended);
+        _isReconnecting = false;
+      }
     } catch (e) {
       _isReconnecting = false;
       print('Error ending call: $e');
@@ -713,17 +750,24 @@ class SignalingService {
       await _channel?.sink.close();
       _channel = null;
 
-      print('Remote end call handled - Reconnecting...');
+      // Check if we should reconnect (standard mode) or just clean up (FCM mode)
+      if (_shouldReconnectAfterEnd) {
+        print('Remote end call handled - Reconnecting (standard mode)...');
 
-      // Wait a bit before reconnecting
-      await Future.delayed(const Duration(milliseconds: 500));
+        // Wait a bit before reconnecting
+        await Future.delayed(const Duration(milliseconds: 500));
 
-      // Reinitialize and reconnect
-      await initialize();
-      await connectAndWaitForCalls();
+        // Reinitialize and reconnect
+        await initialize();
+        await connectAndWaitForCalls();
 
-      _isReconnecting = false;
-      print('Ready for next call');
+        _isReconnecting = false;
+        print('Ready for next call');
+      } else {
+        print('Remote end call handled - Not reconnecting (FCM mode)');
+        _onCallStateChanged.add(CallState.ended);
+        _isReconnecting = false;
+      }
     } catch (e) {
       _isReconnecting = false;
       print('Error handling remote end call: $e');

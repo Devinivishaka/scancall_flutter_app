@@ -100,6 +100,28 @@ class _CallScreenState extends State<CallScreen> {
               } catch (e) {
                 print('⚠️ Could not clear remote renderer srcObject: $e');
               }
+              
+              // If this was an FCM call, navigate back to home when call ends
+              if (widget.callId != null) {
+                print('🔥 FCM call ended (remote) - navigating back to home');
+                Future.delayed(const Duration(milliseconds: 500), () {
+                  if (mounted) {
+                    Navigator.of(context).pop();
+                  }
+                });
+              }
+            }
+            
+            // Handle ended state (for quick end without waiting state)
+            if (state == CallState.ended) {
+              if (widget.callId != null) {
+                print('🔥 FCM call ended immediately - navigating back to home');
+                Future.delayed(const Duration(milliseconds: 500), () {
+                  if (mounted) {
+                    Navigator.of(context).pop();
+                  }
+                });
+              }
             }
           });
         },
@@ -115,14 +137,27 @@ class _CallScreenState extends State<CallScreen> {
       // Listen for incoming calls
       _signalingService.onIncomingCall.listen(
         (_) {
-          setState(() {
-            _showIncomingCallUI = true;
-            _callState = CallState.incoming;
-            _statusText = '📞 Incoming Call!';
-          });
+          // If this is an FCM call (user already accepted via CallKit), auto-accept
+          if (widget.callId != null) {
+            print('🔥 FCM call: Auto-accepting since user already accepted via CallKit');
+            setState(() {
+              _statusText = 'Connecting to call...';
+              _callState = CallState.connecting;
+            });
+            // Auto-accept the call
+            Future.delayed(const Duration(milliseconds: 100), () {
+              _acceptCall();
+            });
+          } else {
+            // Standard flow: Show incoming call UI for user to accept/reject
+            setState(() {
+              _showIncomingCallUI = true;
+              _callState = CallState.incoming;
+              _statusText = '📞 Incoming Call!';
+            });
 
-          // Show notification or play ringtone here
-          print('🔔 INCOMING CALL - Waiting for user to accept...');
+            print('🔔 INCOMING CALL - Waiting for user to accept...');
+          }
         },
         onError: (error) {
           print('❌ Error in incoming call stream: $error');
@@ -237,8 +272,22 @@ class _CallScreenState extends State<CallScreen> {
         _isInitialized = true;
       });
 
-      // Automatically connect and wait for calls
+      // Connect to WebSocket
       await _connectAndWait();
+
+      // Check if this is an FCM-triggered call (user already accepted via CallKit)
+      if (widget.callId != null) {
+        print('🔥 FCM call flow detected - callId: ${widget.callId}');
+        print('   User already accepted via CallKit - waiting for offer...');
+        // Do NOT auto-accept here - wait for the offer to come via WebSocket
+        // When offer arrives, it will trigger onIncomingCall listener
+        // But we should auto-accept instead of showing UI
+        setState(() {
+          _statusText = 'Waiting for call connection...';
+        });
+      } else {
+        print('📞 Standard flow - waiting for any incoming calls');
+      }
 
       print('Service initialized successfully - Ready to receive calls');
     } catch (e) {
@@ -323,7 +372,13 @@ class _CallScreenState extends State<CallScreen> {
         _statusText = 'Connecting to server...';
       });
 
-      await _signalingService.connectAndWaitForCalls();
+      // If this is an FCM call, use the callId as the room name
+      final room = widget.callId;
+      if (room != null) {
+        print('🔥 Joining room: $room (from FCM callId)');
+      }
+      
+      await _signalingService.connectAndWaitForCalls(room: room);
 
       setState(() {
         _statusText = 'Waiting for call...';
@@ -360,9 +415,19 @@ class _CallScreenState extends State<CallScreen> {
   Future<void> _endCall() async {
     try {
       await _signalingService.endCall();
-      setState(() {
-        _statusText = 'Call ended - Waiting for next call...';
-      });
+      
+      // If this was an FCM call, navigate back to home screen
+      if (widget.callId != null) {
+        print('🔥 FCM call ended - navigating back to home');
+        if (mounted) {
+          Navigator.of(context).pop();
+        }
+      } else {
+        // Standard flow: Stay on screen and wait for next call
+        setState(() {
+          _statusText = 'Call ended - Waiting for next call...';
+        });
+      }
     } catch (e) {
       print('Error ending call: $e');
       setState(() {
