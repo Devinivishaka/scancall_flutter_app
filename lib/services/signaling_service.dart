@@ -258,13 +258,22 @@ class SignalingService {
           _handleSignalingMessage(message);
         },
         onError: (error) {
-          print('WebSocket error: $error');
-          _onCallStateChanged.add(CallState.error);
+          print('❌ WebSocket error: $error');
+          // Don't immediately set to error state - try to recover
+          if (!_isReconnecting) {
+            print('   Will attempt to reconnect...');
+            _attemptReconnect();
+          }
         },
         onDone: () {
-          print('WebSocket closed');
-          // Don't set to ended here - let the app handle reconnection
+          print('🔌 WebSocket connection closed');
+          // Attempt to reconnect when connection closes unexpectedly
+          if (!_isReconnecting) {
+            print('   Attempting to reconnect...');
+            _attemptReconnect();
+          }
         },
+        cancelOnError: false, // Don't cancel the stream on error
       );
 
       // Join the room
@@ -285,7 +294,19 @@ class SignalingService {
   void _handleSignalingMessage(dynamic message) async {
     try {
       final data = jsonDecode(message);
+
+      // Validate message structure
+      if (data is! Map<String, dynamic>) {
+        print('⚠️ Invalid message format (not a JSON object): $message');
+        return;
+      }
+
       final type = data['type'];
+
+      if (type == null) {
+        print('⚠️ Message missing "type" field: $data');
+        return;
+      }
 
       print('Received message: $type');
 
@@ -322,14 +343,20 @@ class SignalingService {
           print('Joined room: $_roomName - Ready to receive calls');
           break;
         case 'error':
-          print('Signaling error: ${data['message']}');
-          _onCallStateChanged.add(CallState.error);
+          final errorMsg = data['message'] ?? data['error'] ?? 'Unknown error occurred';
+          print('Signaling error: $errorMsg');
+          print('   Full error data: $data');
+          // Don't change state to error immediately - could be a non-critical error
+          // Only log it and continue waiting for calls
           break;
         default:
           print('Unknown message type: $type');
       }
-    } catch (e) {
-      print('Error handling signaling message: $e');
+    } catch (e, stackTrace) {
+      print('❌ Error handling signaling message: $e');
+      print('   Message: $message');
+      print('   Stack trace: $stackTrace');
+      // Don't crash - just log and continue
     }
   }
 
@@ -790,6 +817,46 @@ class SignalingService {
       }
     } catch (e) {
       print('Error stopping vibration: $e');
+    }
+  }
+
+  /// Attempt to reconnect to signaling server
+  Future<void> _attemptReconnect() async {
+    if (_isReconnecting) {
+      print('Already reconnecting, skipping...');
+      return;
+    }
+
+    try {
+      _isReconnecting = true;
+      print('🔄 Attempting to reconnect to signaling server...');
+
+      // Close existing WebSocket if any
+      try {
+        await _channel?.sink.close();
+      } catch (e) {
+        print('   Error closing old connection: $e');
+      }
+      _channel = null;
+
+      // Wait before reconnecting
+      await Future.delayed(const Duration(seconds: 2));
+
+      // Reconnect to signaling server
+      await connectAndWaitForCalls();
+
+      _isReconnecting = false;
+      print('✅ Reconnected successfully');
+    } catch (e) {
+      _isReconnecting = false;
+      print('❌ Reconnection failed: $e');
+      print('   Will retry in 5 seconds...');
+
+      // Retry after a longer delay
+      await Future.delayed(const Duration(seconds: 5));
+      if (!_isReconnecting) {
+        _attemptReconnect();
+      }
     }
   }
 

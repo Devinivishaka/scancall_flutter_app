@@ -68,117 +68,146 @@ class _CallScreenState extends State<CallScreen> {
       await _signalingService.initialize();
 
       // Listen to call state changes
-      _signalingService.onCallStateChanged.listen((state) {
-        setState(() {
-          _callState = state;
-          _statusText = _getStatusText(state);
+      _signalingService.onCallStateChanged.listen(
+        (state) {
+          setState(() {
+            _callState = state;
+            _statusText = _getStatusText(state);
 
-          // Hide incoming call UI when call starts or ends
-          if (state == CallState.connecting ||
-              state == CallState.connected) {
-            _showIncomingCallUI = false;
-          }
+            // Show error message if error state
+            if (state == CallState.error) {
+              _errorMessage = 'Connection error occurred. Reconnecting...';
+            }
 
-          // Clear video when call ends and we're back to waiting
-          if (state == CallState.waiting) {
-            _showIncomingCallUI = false;
-            // Clear video renderers
-            try {
-              _localRenderer.srcObject = null;
-            } catch (e) {
-              print('⚠️ Could not clear local renderer srcObject: $e');
+            // Hide incoming call UI when call starts or ends
+            if (state == CallState.connecting ||
+                state == CallState.connected) {
+              _showIncomingCallUI = false;
             }
-            try {
-              _remoteRenderer.srcObject = null;
-            } catch (e) {
-              print('⚠️ Could not clear remote renderer srcObject: $e');
+
+            // Clear video when call ends and we're back to waiting
+            if (state == CallState.waiting) {
+              _showIncomingCallUI = false;
+              _errorMessage = null; // Clear any previous errors
+              // Clear video renderers
+              try {
+                _localRenderer.srcObject = null;
+              } catch (e) {
+                print('⚠️ Could not clear local renderer srcObject: $e');
+              }
+              try {
+                _remoteRenderer.srcObject = null;
+              } catch (e) {
+                print('⚠️ Could not clear remote renderer srcObject: $e');
+              }
             }
-          }
-        });
-      });
+          });
+        },
+        onError: (error) {
+          print('❌ Error in call state stream: $error');
+          setState(() {
+            _errorMessage = 'Error: $error';
+            _callState = CallState.error;
+          });
+        },
+      );
 
       // Listen for incoming calls
-      _signalingService.onIncomingCall.listen((_) {
-        setState(() {
-          _showIncomingCallUI = true;
-          _callState = CallState.incoming;
-          _statusText = '📞 Incoming Call!';
-        });
+      _signalingService.onIncomingCall.listen(
+        (_) {
+          setState(() {
+            _showIncomingCallUI = true;
+            _callState = CallState.incoming;
+            _statusText = '📞 Incoming Call!';
+          });
 
-        // Show notification or play ringtone here
-        print('🔔 INCOMING CALL - Waiting for user to accept...');
-      });
+          // Show notification or play ringtone here
+          print('🔔 INCOMING CALL - Waiting for user to accept...');
+        },
+        onError: (error) {
+          print('❌ Error in incoming call stream: $error');
+        },
+      );
 
       // Listen to remote stream (incoming video)
-      _signalingService.onRemoteStream.listen((stream) async {
-        print('🎥 Remote stream received in UI');
-        print('   - Video tracks: ${stream.getVideoTracks().length}');
-        print('   - Audio tracks: ${stream.getAudioTracks().length}');
+      _signalingService.onRemoteStream.listen(
+        (stream) async {
+          print('🎥 Remote stream received in UI');
+          print('   - Video tracks: ${stream.getVideoTracks().length}');
+          print('   - Audio tracks: ${stream.getAudioTracks().length}');
 
-        // Ensure video tracks are enabled
-        for (var track in stream.getVideoTracks()) {
-          print('   - Remote video track: ${track.id}, enabled: ${track.enabled}');
-          track.enabled = true;
-        }
+          // Ensure video tracks are enabled
+          for (var track in stream.getVideoTracks()) {
+            print('   - Remote video track: ${track.id}, enabled: ${track.enabled}');
+            track.enabled = true;
+          }
 
-        // Make sure renderer is initialized before assigning the stream
-        if (!_remoteVideoInitialized) {
+          // Make sure renderer is initialized before assigning the stream
+          if (!_remoteVideoInitialized) {
+            try {
+              print('⏳ Remote renderer not initialized yet - initializing now...');
+              await _remoteRenderer.initialize();
+              setState(() {
+                _remoteVideoInitialized = true;
+              });
+              print('✅ Remote renderer initialized (late)');
+            } catch (e) {
+              print('❌ Failed to initialize remote renderer: $e');
+              return;
+            }
+          }
+
           try {
-            print('⏳ Remote renderer not initialized yet - initializing now...');
-            await _remoteRenderer.initialize();
             setState(() {
-              _remoteVideoInitialized = true;
+              _remoteRenderer.srcObject = stream;
+              print('   ✅ Remote renderer updated with stream');
             });
-            print('✅ Remote renderer initialized (late)');
           } catch (e) {
-            print('❌ Failed to initialize remote renderer: $e');
-            return;
+            print('⚠️ Could not set remote renderer srcObject: $e');
           }
-        }
 
-        try {
-          setState(() {
-            _remoteRenderer.srcObject = stream;
-            print('   ✅ Remote renderer updated with stream');
+          // Force a rebuild after a short delay to ensure video shows
+          Future.delayed(const Duration(milliseconds: 100), () {
+            if (mounted) {
+              setState(() {});
+            }
           });
-        } catch (e) {
-          print('⚠️ Could not set remote renderer srcObject: $e');
-        }
-
-        // Force a rebuild after a short delay to ensure video shows
-        Future.delayed(const Duration(milliseconds: 100), () {
-          if (mounted) {
-            setState(() {});
-          }
-        });
-      });
+        },
+        onError: (error) {
+          print('❌ Error in remote stream: $error');
+          setState(() {
+            _errorMessage = 'Error receiving remote video: $error';
+          });
+        },
+      );
 
       // Listen to local stream (our video)
-      _signalingService.onLocalStream.listen((stream) async {
-        print('📹 Local stream received in UI');
-        print('   - Video tracks: ${stream.getVideoTracks().length}');
-        print('   - Audio tracks: ${stream.getAudioTracks().length}');
+      _signalingService.onLocalStream.listen(
+        (stream) async {
+          print('📹 Local stream received in UI');
+          print('   - Video tracks: ${stream.getVideoTracks().length}');
+          print('   - Audio tracks: ${stream.getAudioTracks().length}');
 
-        // Ensure video tracks are enabled
-        for (var track in stream.getVideoTracks()) {
-          print('   - Local video track: ${track.id}, enabled: ${track.enabled}');
-          track.enabled = true;
-        }
-
-        // Make sure renderer is initialized before assigning the stream
-        if (!_localVideoInitialized) {
-          try {
-            print('⏳ Local renderer not initialized yet - initializing now...');
-            await _localRenderer.initialize();
-            setState(() {
-              _localVideoInitialized = true;
-            });
-            print('✅ Local renderer initialized (late)');
-          } catch (e) {
-            print('❌ Failed to initialize local renderer: $e');
-            return;
+          // Ensure video tracks are enabled
+          for (var track in stream.getVideoTracks()) {
+            print('   - Local video track: ${track.id}, enabled: ${track.enabled}');
+            track.enabled = true;
           }
-        }
+
+          // Make sure renderer is initialized before assigning the stream
+          if (!_localVideoInitialized) {
+            try {
+              print('⏳ Local renderer not initialized yet - initializing now...');
+              await _localRenderer.initialize();
+              setState(() {
+                _localVideoInitialized = true;
+              });
+              print('✅ Local renderer initialized (late)');
+            } catch (e) {
+              print('❌ Failed to initialize local renderer: $e');
+              return;
+            }
+          }
 
         try {
           setState(() {
@@ -195,7 +224,14 @@ class _CallScreenState extends State<CallScreen> {
             setState(() {});
           }
         });
-      });
+      },
+      onError: (error) {
+        print('❌ Error in local stream: $error');
+        setState(() {
+          _errorMessage = 'Error accessing camera/microphone: $error';
+        });
+      },
+    );
 
       setState(() {
         _isInitialized = true;
