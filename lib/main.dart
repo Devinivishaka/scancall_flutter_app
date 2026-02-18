@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_callkit_incoming/entities/android_params.dart';
 import 'package:flutter_callkit_incoming/entities/call_event.dart';
 import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
@@ -107,9 +108,6 @@ Future<void> main() async {
   // Request notification permission (required for Android 13+)
   await _requestNotificationPermission();
 
-  // Print FCM token
-  await _printFcmToken();
-
   // Listen for token refreshes
   FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
     print('🔑 FCM Token refreshed: $newToken');
@@ -183,29 +181,6 @@ Future<void> _requestNotificationPermission() async {
   if (settings.authorizationStatus == AuthorizationStatus.denied) {
     print('⚠️ Notification permission DENIED - FCM push will not work!');
     print('   Go to Settings > Apps > ScanCall > Notifications and enable them.');
-  }
-}
-
-/// Print FCM registration token for testing
-Future<void> _printFcmToken() async {
-  try {
-    final String? fcmToken = await FirebaseMessaging.instance.getToken();
-    if (fcmToken == null) {
-      print('⚠️ FCM token is null. Possible causes:');
-      print('   - No Google Play services on device/emulator');
-      if (Platform.isAndroid) {
-        print('   - Use emulator with Google Play image or a real device');
-      }
-    } else {
-      print('');
-      print('══════════════════════════════════════════════════════');
-      print('🔑 FCM TOKEN (copy this for testing):');
-      print(fcmToken);
-      print('══════════════════════════════════════════════════════');
-      print('');
-    }
-  } catch (e, st) {
-    print('⚠️ Failed to get FCM token: $e\n$st');
   }
 }
 
@@ -337,6 +312,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _showNotificationHelp() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Go to Settings → Apps → ScanCall → Notifications to enable them.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -344,93 +325,65 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('ScanCall'),
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
+        elevation: 2,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            const SizedBox(height: 40),
-            const Icon(
-              Icons.phone_in_talk,
-              size: 80,
-              color: Colors.blue,
-            ),
-            const SizedBox(height: 24),
-            Text(
-              _status,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'The app will show an incoming call screen\nwhen an FCM push notification is received.',
-              style: TextStyle(fontSize: 14, color: Colors.grey),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 40),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'FCM Token:',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                  ),
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    _fcmToken,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey.shade700,
-                      fontFamily: 'monospace',
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 36.0),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 600),
+            child: Card(
+              elevation: 6,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    CircleAvatar(
+                      radius: 48,
+                      backgroundColor: Colors.blue.shade50,
+                      child: const Icon(
+                        Icons.phone_in_talk,
+                        size: 48,
+                        color: Colors.blue,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 18),
+                    Text(
+                      _status,
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'The app will show the incoming call screen when an FCM push notification is received. Make sure notifications are enabled.',
+                      style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 20),
+                    const SizedBox(height: 400),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _showNotificationHelp,
+                        icon: const Icon(Icons.notifications),
+                        label: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12.0),
+                          child: Text('Notification Settings'),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: _loadToken,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Refresh Token'),
-            ),
-            const Spacer(),
-            // Test button to simulate incoming call
-            ElevatedButton.icon(
-              onPressed: () async {
-                await _showIncomingCall({
-                  'callId': 'test_${DateTime.now().millisecondsSinceEpoch}',
-                  'callerName': 'Test Caller',
-                  'type': 'incoming_call',
-                });
-                setState(() {
-                  _status = 'Test call triggered!';
-                });
-                Future.delayed(const Duration(seconds: 3), () {
-                  if (mounted) {
-                    setState(() {
-                      _status = 'Waiting for incoming calls...';
-                    });
-                  }
-                });
-              },
-              icon: const Icon(Icons.phone),
-              label: const Text('Test Incoming Call (Local)'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              ),
-            ),
-            const SizedBox(height: 20),
-          ],
+          ),
         ),
       ),
     );
