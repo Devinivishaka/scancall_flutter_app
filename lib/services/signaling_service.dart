@@ -15,6 +15,9 @@ class SignalingService {
   // Dynamic room name (overrides _roomName if set)
   String? _dynamicRoom;
   
+  // User/Device ID for signaling (can be FCM token or unique device ID)
+  String? _userId;
+  
   // Flag to control reconnection behavior (false for FCM calls)
   bool _shouldReconnectAfterEnd = true;
   
@@ -126,6 +129,12 @@ class SignalingService {
   Stream<void> get onIncomingCall => _onIncomingCall.stream;
   MediaStream? get remoteStream => _remoteStream;
   MediaStream? get localStream => _localStream;
+
+  // Setter for userId (e.g., FCM token)
+  void setUserId(String userId) {
+    _userId = userId;
+    print('🆔 User ID set: ${userId.substring(0, 20)}...');
+  }
 
   /// Initialize the signaling service
   Future<void> initialize() async {
@@ -331,13 +340,14 @@ class SignalingService {
         cancelOnError: false, // Don't cancel the stream on error
       );
 
-      // Join the room
+      // Join the room with userId
       _sendMessage({
         'type': 'join',
         'room': currentRoom,
+        'user': _userId ?? 'mobile-${DateTime.now().millisecondsSinceEpoch}', // Generate unique ID if not set
       });
 
-      print('Connected to signaling server - Waiting for calls in room: $currentRoom');
+      print('Connected to signaling server - Waiting for calls in room: $currentRoom (user: ${_userId ?? "auto-generated"})');
     } catch (e) {
       print('Error connecting to signaling server: $e');
       _emitCallState(CallState.error);
@@ -397,7 +407,11 @@ class SignalingService {
           } else {
             // If already connected, send a join for the dynamic room so caller can send offer
             print('Already connected - joining dynamic room: $callId');
-            _sendMessage({'type': 'join', 'room': currentRoom});
+            _sendMessage({
+              'type': 'join',
+              'room': currentRoom,
+              'user': _userId ?? 'mobile-${DateTime.now().millisecondsSinceEpoch}',
+            });
           }
         } else {
           print('⚠️ INCOMING_CALL missing callId');

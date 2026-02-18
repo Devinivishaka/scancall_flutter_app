@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FCM Test Caller - ScanCall</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 700px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .status.idle {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .status.connecting {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+
+        .status.connected {
+            background: #e8f5e9;
+            color: #388e3c;
+        }
+
+        .status.waiting {
+            background: #fff9c4;
+            color: #f57f17;
+        }
+
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .config-section {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .config-section h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        .input-group label {
+            display: block;
+            color: #666;
+            font-weight: 500;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: monospace;
+            transition: border-color 0.3s;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .input-hint {
+            color: #999;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+
+        button {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-call {
+            background: #4caf50;
+            color: white;
+        }
+
+        .btn-call:hover:not(:disabled) {
+            background: #45a049;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+
+        .btn-end {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-end:hover:not(:disabled) {
+            background: #da190b;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+        }
+
+        .video-section {
+            margin: 20px 0;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            display: none;
+        }
+
+        .video-section.active {
+            display: block;
+        }
+
+        #remoteVideo {
+            width: 100%;
+            height: 400px;
+            object-fit: cover;
+        }
+
+        #localVideo {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 150px;
+            height: 100px;
+            border: 2px solid white;
+            border-radius: 8px;
+            object-fit: cover;
+        }
+
+        .log {
+            background: #263238;
+            color: #aed581;
+            padding: 15px;
+            border-radius: 10px;
+            max-height: 250px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+
+        .log-entry {
+            margin: 5px 0;
+            padding: 3px 0;
+        }
+
+        .log-entry.error {
+            color: #ff5252;
+        }
+
+        .log-entry.success {
+            color: #69f0ae;
+        }
+
+        .log-entry.warning {
+            color: #ffeb3b;
+        }
+
+        .info-box {
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        .info-box p {
+            color: #2e7d32;
+            font-size: 14px;
+            line-height: 1.6;
+            margin: 5px 0;
+        }
+
+        .info-box strong {
+            color: #1b5e20;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📞 FCM Test Caller</h1>
+        <p class="subtitle">Call a Flutter app using FCM notification + WebRTC</p>
+
+        <div class="info-box">
+            <p><strong>How it works:</strong></p>
+            <p>1. Get the FCM token from your Flutter app (shown on home screen)</p>
+            <p>2. Paste it below and click "Call Device"</p>
+            <p>3. The app will receive a push notification and show call UI</p>
+            <p>4. When user accepts, this page will establish the WebRTC connection</p>
+        </div>
+
+        <div id="status" class="status idle">
+            Ready to make calls
+        </div>
+
+        <div class="config-section">
+            <h3>⚙️ Configuration</h3>
+            
+            <div class="input-group">
+                <label for="serverUrl">WebSocket Server URL</label>
+                <input type="text" id="serverUrl" value="ws://10.0.2.2:8080/ws" placeholder="ws://your-server-ip:8080/ws">
+                <div class="input-hint">Change 10.0.2.2 to your computer's local IP address</div>
+            </div>
+
+            <div class="input-group">
+                <label for="fcmToken">Target FCM Token (from Flutter app)</label>
+                <input type="text" id="fcmToken" placeholder="Paste FCM token from Flutter app here">
+                <div class="input-hint">Get this from the home screen of the Flutter app</div>
+            </div>
+
+            <div class="input-group">
+                <label for="callId">Call/Room ID (auto-generated or custom)</label>
+                <input type="text" id="callId" value="" placeholder="Leave empty for auto-generation">
+                <div class="input-hint">Unique identifier for this call session</div>
+            </div>
+        </div>
+
+        <div class="video-section" id="videoSection">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <video id="localVideo" autoplay playsinline muted></video>
+        </div>
+
+        <button id="callBtn" class="btn-call" onclick="initiateCall()">
+            📞 Call Device
+        </button>
+
+        <button id="endBtn" class="btn-end" onclick="endCall()" style="display: none;">
+            ❌ End Call
+        </button>
+
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        // ICE Server Configuration
+        const ICE_SERVERS = {
+            iceServers: [
+                { urls: 'stun:13.127.40.12:3478' },
+                {
+                    urls: [
+                        'turn:13.127.40.12:3478?transport=udp',
+                        'turn:13.127.40.12:3478?transport=tcp'
+                    ],
+                    username: 'myuser',
+                    credential: 'mypassword'
+                }
+            ]
+        };
+
+        let ws = null;
+        let peerConnection = null;
+        let localStream = null;
+        let currentCallId = null;
+        let currentRoom = null;
+        let waitingForReceiver = false;
+        
+        // ICE candidate queue
+        let pendingIceCandidates = [];
+        let remoteDescriptionSet = false;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+
+        function updateStatus(message, className) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${className}`;
+        }
+
+        function generateCallId() {
+            return 'call-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+        }
+
+        async function initiateCall() {
+            try {
+                // Get configuration
+                const serverUrl = document.getElementById('serverUrl').value.trim();
+                const fcmToken = document.getElementById('fcmToken').value.trim();
+                let callId = document.getElementById('callId').value.trim();
+
+                // Validate inputs
+                if (!serverUrl) {
+                    alert('Please enter WebSocket server URL');
+                    return;
+                }
+
+                if (!fcmToken) {
+                    alert('Please enter the FCM token from your Flutter app');
+                    return;
+                }
+
+                // Generate call ID if not provided
+                if (!callId) {
+                    callId = generateCallId();
+                    document.getElementById('callId').value = callId;
+                }
+
+                currentCallId = callId;
+                currentRoom = callId; // Use callId as room name
+
+                log('🚀 Initiating call...', 'success');
+                log(`   Call ID: ${callId}`);
+                log(`   Target FCM Token: ${fcmToken.substring(0, 30)}...`);
+                
+                // Reset state
+                pendingIceCandidates = [];
+                remoteDescriptionSet = false;
+                waitingForReceiver = false;
+
+                updateStatus('Connecting to server...', 'connecting');
+
+                // Connect to WebSocket
+                ws = new WebSocket(serverUrl);
+
+                ws.onopen = async () => {
+                    log('✅ Connected to signaling server', 'success');
+                    
+                    // Join the room (using callId as room name)
+                    ws.send(JSON.stringify({
+                        type: 'join',
+                        room: currentRoom,
+                        user: 'web-caller-' + Date.now()
+                    }));
+
+                    log(`📥 Joined room: ${currentRoom}`);
+                    
+                    // TODO: Send FCM notification to the target device
+                    // For now, this requires a backend API endpoint
+                    log('⚠️ Manual Step: Send FCM push notification with:', 'warning');
+                    log(`   {`, 'warning');
+                    log(`     "type": "incoming_call",`, 'warning');
+                    log(`     "callId": "${callId}",`, 'warning');
+                    log(`     "callerName": "Web Caller"`, 'warning');
+                    log(`   }`, 'warning');
+                    log('💡 Use the FCM test script in tools/fcm_caller/', 'warning');
+
+                    updateStatus('Waiting for receiver to accept...', 'waiting');
+                    waitingForReceiver = true;
+
+                    // Prepare local media
+                    await prepareLocalMedia();
+
+                    document.getElementById('callBtn').style.display = 'none';
+                    document.getElementById('endBtn').style.display = 'block';
+                };
+
+                ws.onmessage = async (event) => {
+                    const data = JSON.parse(event.data);
+                    await handleSignalingMessage(data);
+                };
+
+                ws.onerror = (error) => {
+                    log('❌ WebSocket error', 'error');
+                    console.error(error);
+                    updateStatus('Connection error', 'error');
+                };
+
+                ws.onclose = () => {
+                    log('🔌 Disconnected from server');
+                    cleanup();
+                };
+
+            } catch (error) {
+                log('❌ Error initiating call: ' + error.message, 'error');
+                console.error(error);
+                updateStatus('Error', 'error');
+            }
+        }
+
+        async function prepareLocalMedia() {
+            try {
+                log('🎥 Requesting camera and microphone access...');
+                
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                    },
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: 'user'
+                    }
+                });
+
+                log('✅ Got local media stream', 'success');
+                log(`   - Video tracks: ${localStream.getVideoTracks().length}`);
+                log(`   - Audio tracks: ${localStream.getAudioTracks().length}`);
+
+                // Display local video
+                document.getElementById('localVideo').srcObject = localStream;
+                document.getElementById('videoSection').classList.add('active');
+
+                // Create peer connection
+                await createPeerConnection();
+
+            } catch (error) {
+                log('❌ Failed to get media: ' + error.message, 'error');
+                throw error;
+            }
+        }
+
+        async function createPeerConnection() {
+            log('🔗 Creating peer connection...');
+            
+            peerConnection = new RTCPeerConnection(ICE_SERVERS);
+
+            // Add local tracks
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+                log(`✅ Added local ${track.kind} track`);
+            });
+
+            // Handle remote tracks
+            peerConnection.ontrack = (event) => {
+                log('🎬 Received remote track: ' + event.track.kind, 'success');
+                
+                if (event.streams && event.streams[0]) {
+                    document.getElementById('remoteVideo').srcObject = event.streams[0];
+                    log('✅ Remote video stream set', 'success');
+                }
+            };
+
+            // Handle ICE candidates
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                    log('🧊 Sending ICE candidate');
+                    ws.send(JSON.stringify({
+                        type: 'ice-candidate',
+                        room: currentRoom,
+                        candidate: {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex
+                        }
+                    }));
+                }
+            };
+
+            // Monitor connection states
+            peerConnection.oniceconnectionstatechange = () => {
+                const state = peerConnection.iceConnectionState;
+                log(`🔌 ICE Connection State: ${state}`);
+                
+                if (state === 'connected' || state === 'completed') {
+                    log('✅ ICE Connected!', 'success');
+                    updateStatus('Call connected!', 'connected');
+                } else if (state === 'failed') {
+                    log('❌ ICE Failed', 'error');
+                    updateStatus('Connection failed', 'error');
+                }
+            };
+
+            peerConnection.onconnectionstatechange = () => {
+                log(`📡 Connection State: ${peerConnection.connectionState}`);
+            };
+
+            log('✅ Peer connection created', 'success');
+        }
+
+        async function handleSignalingMessage(data) {
+            const type = data.type;
+            log(`📨 Received: ${type}`);
+
+            switch (type) {
+                case 'joined':
+                    log(`✅ Joined room: ${data.room}`, 'success');
+                    break;
+
+                case 'user-joined':
+                    // Another user joined the room (receiver accepted!)
+                    if (waitingForReceiver) {
+                        log('✅ Receiver joined the room! Sending offer...', 'success');
+                        updateStatus('Receiver joined! Establishing connection...', 'connecting');
+                        waitingForReceiver = false;
+                        await sendOffer();
+                    }
+                    break;
+
+                case 'answer':
+                    log('📥 Received answer from receiver', 'success');
+                    
+                    try {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                        log('✅ Set remote description', 'success');
+                        remoteDescriptionSet = true;
+
+                        // Add queued ICE candidates
+                        if (pendingIceCandidates.length > 0) {
+                            log(`📋 Adding ${pendingIceCandidates.length} queued ICE candidates`);
+                            for (const candidate of pendingIceCandidates) {
+                                try {
+                                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                                } catch (e) {
+                                    log('⚠️ Error adding queued candidate: ' + e.message, 'warning');
+                                }
+                            }
+                            pendingIceCandidates = [];
+                            log('✅ All queued candidates processed', 'success');
+                        }
+
+                        updateStatus('Connecting call...', 'connecting');
+                    } catch (error) {
+                        log('❌ Error setting remote description: ' + error.message, 'error');
+                    }
+                    break;
+
+                case 'ice-candidate':
+                    if (!remoteDescriptionSet) {
+                        log('⏳ Queueing ICE candidate (remote description not set)');
+                        pendingIceCandidates.push(data.candidate);
+                    } else {
+                        try {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                            log('✅ ICE candidate added');
+                        } catch (error) {
+                            log('⚠️ Error adding ICE candidate: ' + error.message, 'warning');
+                        }
+                    }
+                    break;
+
+                case 'call-ended':
+                case 'call-rejected':
+                    log('📵 Call ended by receiver', 'error');
+                    updateStatus('Call ended', 'idle');
+                    endCall();
+                    break;
+
+                case 'error':
+                    log('❌ Server error: ' + (data.msg || data.message), 'error');
+                    break;
+
+                default:
+                    log(`ℹ️ Unhandled message type: ${type}`);
+            }
+        }
+
+        async function sendOffer() {
+            try {
+                log('📤 Creating offer...');
+                
+                const offer = await peerConnection.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: true
+                });
+
+                await peerConnection.setLocalDescription(offer);
+                log('✅ Created and set local description (offer)', 'success');
+
+                // Send offer to receiver
+                ws.send(JSON.stringify({
+                    type: 'offer',
+                    room: currentRoom,
+                    sdp: {
+                        type: offer.type,
+                        sdp: offer.sdp
+                    }
+                }));
+
+                log('📤 Offer sent to receiver', 'success');
+                updateStatus('Offer sent, waiting for answer...', 'waiting');
+
+            } catch (error) {
+                log('❌ Error creating offer: ' + error.message, 'error');
+                updateStatus('Error', 'error');
+            }
+        }
+
+        function endCall() {
+            log('📵 Ending call...');
+
+            // Notify server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'call-ended',
+                    room: currentRoom
+                }));
+            }
+
+            cleanup();
+            log('✅ Call ended', 'success');
+        }
+
+        function cleanup() {
+            // Stop local media
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    track.stop();
+                    log('⏹️ Stopped ' + track.kind + ' track');
+                });
+                localStream = null;
+            }
+
+            // Close peer connection
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+                log('⏹️ Closed peer connection');
+            }
+
+            // Close WebSocket
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            // Clear video
+            document.getElementById('localVideo').srcObject = null;
+            document.getElementById('remoteVideo').srcObject = null;
+            document.getElementById('videoSection').classList.remove('active');
+
+            // Reset UI
+            document.getElementById('callBtn').style.display = 'block';
+            document.getElementById('endBtn').style.display = 'none';
+            updateStatus('Ready to make calls', 'idle');
+
+            // Reset state
+            currentCallId = null;
+            currentRoom = null;
+            waitingForReceiver = false;
+            pendingIceCandidates = [];
+            remoteDescriptionSet = false;
+        }
+    </script>
+</body>
+</html>

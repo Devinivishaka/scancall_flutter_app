@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/signaling_service.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 class CallScreen extends StatefulWidget {
   final String? callId;
@@ -64,6 +65,17 @@ class _CallScreenState extends State<CallScreen> {
 
   Future<void> _initializeService() async {
     try {
+      // Get FCM token to use as user ID
+      try {
+        final fcmToken = await FirebaseMessaging.instance.getToken();
+        if (fcmToken != null) {
+          _signalingService.setUserId(fcmToken);
+          print('✅ Set userId from FCM token: ${fcmToken.substring(0, 20)}...');
+        }
+      } catch (e) {
+        print('⚠️ Could not get FCM token: $e');
+      }
+
       // Initialize signaling service
       await _signalingService.initialize();
 
