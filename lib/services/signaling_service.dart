@@ -89,11 +89,35 @@ class SignalingService {
   // Flag to track vibration state
   bool _isVibrating = false;
 
+  // Track whether service is disposed to avoid adding events to closed streams
+  bool _isDisposed = false;
+
   // Stream controllers for callbacks
   final _onCallStateChanged = StreamController<CallState>.broadcast();
   final _onRemoteStream = StreamController<MediaStream>.broadcast();
   final _onLocalStream = StreamController<MediaStream>.broadcast();
   final _onIncomingCall = StreamController<void>.broadcast();
+
+  // Safe emit helpers
+  void _emitCallState(CallState state) {
+    if (_isDisposed) return;
+    if (!_onCallStateChanged.isClosed) _onCallStateChanged.add(state);
+  }
+
+  void _emitRemoteStream(MediaStream stream) {
+    if (_isDisposed) return;
+    if (!_onRemoteStream.isClosed) _onRemoteStream.add(stream);
+  }
+
+  void _emitLocalStream(MediaStream stream) {
+    if (_isDisposed) return;
+    if (!_onLocalStream.isClosed) _onLocalStream.add(stream);
+  }
+
+  void _emitIncomingCall() {
+    if (_isDisposed) return;
+    if (!_onIncomingCall.isClosed) _onIncomingCall.add(null);
+  }
 
   // Getters
   Stream<CallState> get onCallStateChanged => _onCallStateChanged.stream;
@@ -132,6 +156,7 @@ class SignalingService {
 
       // Set up peer connection callbacks
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
+        if (_isDisposed) return;
         final candidateStr = candidate.candidate ?? '';
         print('🧊 ICE Candidate generated: $candidateStr');
 
@@ -221,11 +246,11 @@ class SignalingService {
             print('   - Audio tracks: ${_remoteStream!.getAudioTracks().length}');
 
             // Notify UI about the stream
-            _onRemoteStream.add(_remoteStream!);
+            _emitRemoteStream(_remoteStream!);
           } else {
             print('✅ Track added to existing stream');
             // Still notify UI in case it's a new track type
-            _onRemoteStream.add(_remoteStream!);
+            _emitRemoteStream(_remoteStream!);
           }
         } else {
           print('⚠️ No streams in track event');
@@ -236,14 +261,14 @@ class SignalingService {
         print('Connection state: $state');
         switch (state) {
           case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
-            _onCallStateChanged.add(CallState.connected);
+            _emitCallState(CallState.connected);
             break;
           case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
           case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
-            _onCallStateChanged.add(CallState.ended);
+            _emitCallState(CallState.ended);
             break;
           case RTCPeerConnectionState.RTCPeerConnectionStateConnecting:
-            _onCallStateChanged.add(CallState.connecting);
+            _emitCallState(CallState.connecting);
             break;
           default:
             break;
@@ -260,6 +285,10 @@ class SignalingService {
   /// Connect to the signaling server and wait for incoming calls
   /// [room] - Optional room/call ID to join. If null, uses default room.
   Future<void> connectAndWaitForCalls({String? room}) async {
+    if (_isDisposed) {
+      print('connectAndWaitForCalls called after dispose - ignoring');
+      return;
+    }
     try {
       // Set the dynamic room if provided
       if (room != null) {
@@ -273,8 +302,8 @@ class SignalingService {
         _shouldPlayRingtone = true; // Standard mode - play ringtone on incoming call
         print('🏠 Using default room: $_roomName (Standard mode - auto-reconnect, with ringtone)');
       }
-      
-      _onCallStateChanged.add(CallState.waiting);
+
+      _emitCallState(CallState.waiting);
 
       _channel = WebSocketChannel.connect(Uri.parse(_signalingServerUrl));
 
@@ -311,7 +340,7 @@ class SignalingService {
       print('Connected to signaling server - Waiting for calls in room: $currentRoom');
     } catch (e) {
       print('Error connecting to signaling server: $e');
-      _onCallStateChanged.add(CallState.error);
+      _emitCallState(CallState.error);
       rethrow;
     }
   }
@@ -336,13 +365,92 @@ class SignalingService {
 
       print('Received message: $type');
 
+      // Normalize type so we can support both backend uppercase notifier messages
+      // (e.g. INCOMING_CALL, CALL_ACCEPTED) and the existing lowercase signaling messages
+      final normalized = type.toString().replaceAll('-', '_').replaceAll(' ', '_').toLowerCase();
+
+      // Handle backend notifier-style messages first (normalized)
+      if (normalized == 'incoming_call') {
+        // Backend notifier tells us a call is incoming and provides a callId (room)
+        final callId = data['callId'] ?? data['room'];
+        final callType = data['callType'] ?? 'AUDIO';
+        print('📞 INCOMING_CALL from server - callId: $callId, callType: $callType');
+
+        // Configure dynamic room (join this call room to receive offer/ice from caller)
+        if (callId != null) {
+          _dynamicRoom = callId;
+          _shouldReconnectAfterEnd = false; // FCM/Notifier-style incoming call: don't auto-reconnect after end
+          _shouldPlayRingtone = true; // user hasn't accepted yet, so play ringtone
+
+          _emitCallState(CallState.incoming);
+          _emitIncomingCall(); // Notify UI
+
+          // Play ringtone
+          if (_shouldPlayRingtone) {
+            await _playRingtone();
+          }
+
+          // If we're not connected to the WS, create connection and join the dynamic room.
+          if (_channel == null) {
+            print('Not connected to WS - connecting and joining dynamic room: $callId');
+            await connectAndWaitForCalls(room: callId);
+          } else {
+            // If already connected, send a join for the dynamic room so caller can send offer
+            print('Already connected - joining dynamic room: $callId');
+            _sendMessage({'type': 'join', 'room': currentRoom});
+          }
+        } else {
+          print('⚠️ INCOMING_CALL missing callId');
+        }
+
+        return;
+      }
+
+      if (normalized == 'call_accepted') {
+        print('CALL_ACCEPTED received');
+        _emitCallState(CallState.connecting);
+        return;
+      }
+
+      if (normalized == 'call_rejected') {
+        print('CALL_REJECTED received');
+        _emitCallState(CallState.ended);
+        return;
+      }
+
+      if (normalized == 'call_ended') {
+        print('CALL_ENDED received');
+        await _handleRemoteEndCall();
+        return;
+      }
+
+      if (normalized == 'call_cancelled') {
+        print('CALL_CANCELLED received');
+        await _handleRemoteEndCall();
+        return;
+      }
+
+      if (normalized == 'user_busy') {
+        print('USER_BUSY received');
+        // Caller was informed that callee is busy. Treat as ended/error for UI.
+        _emitCallState(CallState.error);
+        return;
+      }
+
+      if (normalized == 'call_missed') {
+        print('CALL_MISSED received');
+        _emitCallState(CallState.ended);
+        return;
+      }
+
+      // Fallback to existing signaling protocol messages (offer/ice-candidate, call-accepted, etc.)
       switch (type) {
         case 'offer':
           // Incoming call!
           print('📞 INCOMING CALL!');
           _pendingOffer = data['sdp']; // Store the offer
-          _onCallStateChanged.add(CallState.incoming);
-          _onIncomingCall.add(null); // Notify UI
+          _emitCallState(CallState.incoming);
+          _emitIncomingCall(); // Notify UI
 
           // Play ringtone only if enabled (not for FCM calls where user already accepted)
           if (_shouldPlayRingtone) {
@@ -357,7 +465,7 @@ class SignalingService {
         case 'call-accepted':
           // Remote side accepted the call
           print('✅ Remote side accepted the call');
-          _onCallStateChanged.add(CallState.connecting);
+          _emitCallState(CallState.connecting);
           break;
         case 'call-ended':
           // Remote side ended the call
@@ -367,7 +475,7 @@ class SignalingService {
         case 'call-rejected':
           // Remote side rejected the call
           print('❌ Remote side rejected the call');
-          _onCallStateChanged.add(CallState.ended);
+          _emitCallState(CallState.ended);
           break;
         case 'joined':
           print('✅ Joined room: $currentRoom - Ready to receive calls');
@@ -390,12 +498,32 @@ class SignalingService {
     }
   }
 
+  /// Called when an incoming call is received via FCM (or other push) and no WS message will arrive
+  /// This configures the service to use the provided callId as the dynamic room and not require
+  /// a server 'incoming_call' websocket message.
+  void handleFcmIncomingCall({required String callId, String? callerName, String? callType}) {
+    if (_isDisposed) return;
+
+    print('handleFcmIncomingCall - callId: $callId, callerName: $callerName, callType: $callType');
+
+    // Use the provided callId as dynamic room so later connect/join will use it
+    _dynamicRoom = callId;
+
+    // In FCM flow we usually do not want to auto-reconnect after the call ends and
+    // we might skip playing ringtone because CallKit already played it.
+    _shouldReconnectAfterEnd = false;
+    _shouldPlayRingtone = false;
+
+    // Notify UI about the incoming call
+    _emitCallState(CallState.incoming);
+    _emitIncomingCall();
+  }
+
   /// Accept incoming call (called when user taps Accept button)
   Future<void> acceptCall() async {
-    if (_pendingOffer == null) {
-      print('No pending offer to accept');
-      return;
-    }
+    // Note: in FCM flow the remote offer may not have arrived yet. We allow accepting
+    // even when _pendingOffer is null: prepare local media and peer connection, add
+    // tracks and wait for the remote offer to arrive later.
 
     try {
       print('Accepting call...');
@@ -422,7 +550,7 @@ class SignalingService {
       } catch (e) {
         print('❌ Failed to get camera/microphone: $e');
         print('⚠️ Make sure camera and microphone permissions are granted');
-        _onCallStateChanged.add(CallState.error);
+        _emitCallState(CallState.error);
         rethrow;
       }
 
@@ -436,34 +564,45 @@ class SignalingService {
         print('   - Video track enabled: ${track.id}');
       }
 
-      _onLocalStream.add(_localStream!);
+      // Emit local stream to UI
+      _emitLocalStream(_localStream!);
 
-      // Add local tracks to peer connection BEFORE handling offer
+      // Add local tracks to peer connection BEFORE handling offer (works even if offer not yet arrived)
       _localStream!.getTracks().forEach((track) {
         _peerConnection!.addTrack(track, _localStream!);
         print('✅ Added ${track.kind} track to peer connection');
       });
 
-      // Notify the other side that we accepted
-      _sendMessage({
-        'type': 'call-accepted',
-        'room': currentRoom,
-      });
+      // Notify the other side that we accepted if WebSocket is connected
+      if (_channel != null) {
+        _sendMessage({
+          'type': 'call-accepted',
+          'room': currentRoom,
+        });
+      } else {
+        print('No WS channel; will send call-accepted when/if connected');
+      }
 
-      // Now handle the offer and create answer
-      await _handleOffer(_pendingOffer!);
-      _pendingOffer = null; // Clear pending offer
+      // If we already have an offer queued, handle it immediately
+      if (_pendingOffer != null) {
+        await _handleOffer(_pendingOffer!);
+        _pendingOffer = null; // Clear pending offer
+      } else {
+        // No offer yet - set state to connecting and wait for offer to arrive
+        _emitCallState(CallState.connecting);
+        print('No pending offer yet; waiting for remote offer...');
+      }
     } catch (e) {
       print('❌ Error accepting call: $e');
-      _onCallStateChanged.add(CallState.error);
+      _emitCallState(CallState.error);
     }
   }
 
   /// Reject incoming call (called when user taps Reject button)
   Future<void> rejectCall() async {
-    if (_pendingOffer == null) {
-      print('No pending offer to reject');
-      return;
+    if (_pendingOffer == null && _channel == null) {
+      // If we have neither an offer nor a WS channel, treat this as cancel from local
+      print('No pending offer and no WS channel - rejecting locally');
     }
 
     try {
@@ -475,14 +614,16 @@ class SignalingService {
       // Clear pending offer
       _pendingOffer = null;
 
-      // Send rejection message to caller
-      _sendMessage({
-        'type': 'reject',
-        'room': currentRoom,
-      });
+      // Send rejection message to caller if connected
+      if (_channel != null) {
+        _sendMessage({
+          'type': 'reject',
+          'room': currentRoom,
+        });
+      }
 
       // Reset to waiting state
-      _onCallStateChanged.add(CallState.waiting);
+      _emitCallState(CallState.waiting);
 
       print('Call rejected');
     } catch (e) {
@@ -494,7 +635,7 @@ class SignalingService {
   Future<void> _handleOffer(Map<String, dynamic> sdpMap) async {
     try {
       print('📥 Processing incoming offer...');
-      _onCallStateChanged.add(CallState.connecting);
+      _emitCallState(CallState.connecting);
 
       RTCSessionDescription offer = RTCSessionDescription(
         sdpMap['sdp'],
@@ -571,7 +712,7 @@ class SignalingService {
       print('✅ Answer sent - Call connecting...');
     } catch (e) {
       print('❌ Error handling offer: $e');
-      _onCallStateChanged.add(CallState.error);
+      _emitCallState(CallState.error);
     }
   }
 
@@ -711,13 +852,13 @@ class SignalingService {
         print('Ready for next call');
       } else {
         print('Call ended - Not reconnecting (FCM mode)');
-        _onCallStateChanged.add(CallState.ended);
+        _emitCallState(CallState.ended);
         _isReconnecting = false;
       }
     } catch (e) {
       _isReconnecting = false;
       print('Error ending call: $e');
-      _onCallStateChanged.add(CallState.error);
+      _emitCallState(CallState.error);
     }
   }
 
@@ -765,13 +906,13 @@ class SignalingService {
         print('Ready for next call');
       } else {
         print('Remote end call handled - Not reconnecting (FCM mode)');
-        _onCallStateChanged.add(CallState.ended);
+        _emitCallState(CallState.ended);
         _isReconnecting = false;
       }
     } catch (e) {
       _isReconnecting = false;
       print('Error handling remote end call: $e');
-      _onCallStateChanged.add(CallState.error);
+      _emitCallState(CallState.error);
     }
   }
 
@@ -906,17 +1047,63 @@ class SignalingService {
 
   /// Dispose resources
   void dispose() {
+    // Mark disposed first to prevent any further events from being emitted
+    _isDisposed = true;
+
+    // Stop ringtone/vibration
     _stopRingtone(); // Stop ringtone and vibration if playing
+
+    // Stop and dispose local stream
     _localStream?.getTracks().forEach((track) => track.stop());
     _localStream?.dispose();
+    _localStream = null;
+
+    // Dispose remote stream
     _remoteStream?.dispose();
-    _peerConnection?.close();
-    _channel?.sink.close(status.goingAway);
-    _onCallStateChanged.close();
-    _onRemoteStream.close();
-    _onLocalStream.close();
-    _onIncomingCall.close();
+    _remoteStream = null;
+
+    // Remove peer connection callbacks to avoid them firing after dispose
+    try {
+      if (_peerConnection != null) {
+        _peerConnection!.onIceCandidate = null;
+        _peerConnection!.onIceConnectionState = null;
+        _peerConnection!.onIceGatheringState = null;
+        _peerConnection!.onTrack = null;
+        _peerConnection!.onConnectionState = null;
+        awaitClosePeerConnection();
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // Close WebSocket
+    try {
+      _channel?.sink.close(status.goingAway);
+    } catch (e) {
+      // ignore
+    }
+    _channel = null;
+
+    // Close StreamControllers if not already closed
+    if (!_onCallStateChanged.isClosed) _onCallStateChanged.close();
+    if (!_onRemoteStream.isClosed) _onRemoteStream.close();
+    if (!_onLocalStream.isClosed) _onLocalStream.close();
+    if (!_onIncomingCall.isClosed) _onIncomingCall.close();
   }
+
+  // Helper to close peer connection asynchronously
+  void awaitClosePeerConnection() {
+    // Close without awaiting heavy operations here; schedule close microtask
+    Future.microtask(() async {
+      try {
+        await _peerConnection?.close();
+      } catch (e) {
+        // ignore
+      }
+      _peerConnection = null;
+    });
+  }
+
 }
 
 /// Call state enum
