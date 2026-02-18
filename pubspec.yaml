@@ -53,6 +53,14 @@ dependencies:
   # HTTP client for REST API calls
   http: ^1.2.2
 
+  # Firebase packages
+  firebase_core: ^2.20.0
+  firebase_messaging: ^14.6.8
+
+  # CallKit incoming UI (native incoming call)
+  flutter_callkit_incoming: ^2.0.0
+  flutter_local_notifications: ^20.1.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

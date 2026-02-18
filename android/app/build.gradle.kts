@@ -11,8 +11,10 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // Enable Java 17 compatibility and core library desugaring required by some plugins
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -42,3 +44,12 @@ android {
 flutter {
     source = "../.."
 }
+
+// Add core library desugaring dependency required by flutter_local_notifications
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+}
+
+// Apply Google Services plugin to generate firebase resource values from google-services.json
+// Use `apply` here to avoid plugin-resolution ordering issues with the Flutter plugin.
+apply(plugin = "com.google.gms.google-services")

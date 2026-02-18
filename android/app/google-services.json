@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1009964498010",
+    "project_id": "scancall-f8c81",
+    "storage_bucket": "scancall-f8c81.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1009964498010:android:b1f3ad1a92d75e19616c63",
+        "android_client_info": {
+          "package_name": "co.protonestiot.scancall_mobile_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCOwx0Se3zm09xGdH2KnrwD2jtiL-MvMN4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

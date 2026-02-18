@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- These values were generated from the project's google-services.json during a prior build.
+         If you have the official google-services.json from the Firebase Console, prefer placing
+         it at android/app/google-services.json and removing this file. -->
+    <string name="gcm_defaultSenderId" translatable="false">1009964498010</string>
+    <string name="google_api_key" translatable="false">AIzaSyCOwx0Se3zm09xGdH2KnrwD2jtiL-MvMN4</string>
+    <string name="google_app_id" translatable="false">1:1009964498010:android:b1f3ad1a92d75e19616c63</string>
+    <string name="google_crash_reporting_api_key" translatable="false">AIzaSyCOwx0Se3zm09xGdH2KnrwD2jtiL-MvMN4</string>
+    <string name="google_storage_bucket" translatable="false">scancall-f8c81.firebasestorage.app</string>
+    <string name="project_id" translatable="false">scancall-f8c81</string>
+</resources>
