@@ -5,6 +5,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import 'package:vibration/vibration.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 class SignalingService {
 
   static const String _signalingServerUrl = 'ws://10.0.2.2:8080/ws';
@@ -271,6 +273,7 @@ class SignalingService {
       _sendMessage({
         'type': 'join',
         'room': _roomName,
+        'calleeId': getUserId()
       });
 
       print('Connected to signaling server - Waiting for calls...');
@@ -391,6 +394,7 @@ class SignalingService {
       _sendMessage({
         'type': 'call-accepted',
         'room': _roomName,
+        'calleeId': getUserId()
       });
 
       // Now handle the offer and create answer
@@ -422,6 +426,7 @@ class SignalingService {
       _sendMessage({
         'type': 'reject',
         'room': _roomName,
+        'calleeId': getUserId()
       });
 
       // Reset to waiting state
@@ -509,6 +514,7 @@ class SignalingService {
           'type': answer.type,
           'sdp': answer.sdp,
         },
+        'calleeId': getUserId()
       });
 
       print('✅ Answer sent - Call connecting...');
@@ -591,13 +597,35 @@ class SignalingService {
         'sdpMid': candidate.sdpMid,
         'sdpMLineIndex': candidate.sdpMLineIndex,
       },
+      'calleeId': getUserId()
     });
   }
 
   /// Send message to signaling server
-  void _sendMessage(Map<String, dynamic> message) {
+  Future<void> _sendMessage(Map<String, dynamic> message) async {
     if (_channel != null) {
-      _channel!.sink.add(jsonEncode(message));
+      // Resolve any Futures (top-level, nested maps and lists) so jsonEncode doesn't receive a Future
+      Future<dynamic> _resolveValue(dynamic value) async {
+        if (value is Future) return await value;
+        if (value is Map) {
+          final Map<String, dynamic> resolvedMap = {};
+          for (final entry in value.entries) {
+            resolvedMap[entry.key] = await _resolveValue(entry.value);
+          }
+          return resolvedMap;
+        }
+        if (value is List) {
+          return Future.wait(value.map((v) => _resolveValue(v)));
+        }
+        return value;
+      }
+
+      final Map<String, dynamic> resolved = {};
+      for (final entry in message.entries) {
+        resolved[entry.key] = await _resolveValue(entry.value);
+      }
+
+      _channel!.sink.add(jsonEncode(resolved));
     }
   }
 
@@ -617,6 +645,7 @@ class SignalingService {
         _sendMessage({
           'type': 'call-ended',
           'room': _roomName,
+          'calleeId': getUserId()
         });
       }
 
@@ -806,6 +835,13 @@ class SignalingService {
     _onLocalStream.close();
     _onIncomingCall.close();
   }
+}
+
+Future<String> getUserId() async {
+  final SharedPreferences prefs = await SharedPreferences.getInstance();
+  String? userId = prefs.getString('userId');
+  print('User ID: $userId');
+  return userId ?? '';
 }
 
 /// Call state enum

@@ -9,6 +9,7 @@ import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
 import 'package:flutter_callkit_incoming/entities/ios_params.dart';
 import 'package:flutter_callkit_incoming/entities/notification_params.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/call_screen.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -128,6 +129,8 @@ Future<void> main() async {
     print('    file from your Firebase Console into android/app/ and re-run the build,');
     print('    or initialize Firebase manually with Firebase.initializeApp(options: ...).');
   }
+
+  saveUserData();
 
   if (firebaseInitialized) {
     // Request notification permission (required for Android 13+)
@@ -315,4 +318,10 @@ class _MyAppState extends State<MyApp> {
       home: const CallScreen(),
     );
   }
+}
+
+Future<void> saveUserData() async {
+  final SharedPreferences prefs = await SharedPreferences.getInstance();
+  print('Saving user data to SharedPreferences');
+  await prefs.setString('userId', 'u_2208212d-9e4c-46e8-9731-9cc20ec7c8e5');
 }
