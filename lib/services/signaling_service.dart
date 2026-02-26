@@ -79,19 +79,29 @@ class SignalingService {
   // Flag to track vibration state
   bool _isVibrating = false;
 
+  // Current call type: 'audio' or 'video'
+  String _callType = 'video';
+
   // Stream controllers for callbacks
   final _onCallStateChanged = StreamController<CallState>.broadcast();
   final _onRemoteStream = StreamController<MediaStream>.broadcast();
   final _onLocalStream = StreamController<MediaStream>.broadcast();
   final _onIncomingCall = StreamController<void>.broadcast();
+  /// Emits the confirmed new call type ('audio' or 'video') whenever it changes
+  final _onCallTypeChanged = StreamController<String>.broadcast();
+  /// Emits the requested call type when the remote side asks to switch
+  final _onChangeTypeRequest = StreamController<String>.broadcast();
 
   // Getters
   Stream<CallState> get onCallStateChanged => _onCallStateChanged.stream;
   Stream<MediaStream> get onRemoteStream => _onRemoteStream.stream;
   Stream<MediaStream> get onLocalStream => _onLocalStream.stream;
   Stream<void> get onIncomingCall => _onIncomingCall.stream;
+  Stream<String> get onCallTypeChanged => _onCallTypeChanged.stream;
+  Stream<String> get onChangeTypeRequest => _onChangeTypeRequest.stream;
   MediaStream? get remoteStream => _remoteStream;
   MediaStream? get localStream => _localStream;
+  String get callType => _callType;
 
   /// Initialize the signaling service
   Future<void> initialize() async {
@@ -297,6 +307,9 @@ class SignalingService {
           // Incoming call!
           print('📞 INCOMING CALL!');
           _pendingOffer = data['sdp']; // Store the offer
+          // Parse call type sent by caller (default to video)
+          _callType = (data['callType'] as String?)?.toLowerCase() == 'audio' ? 'audio' : 'video';
+          print('   📱 Call type: $_callType');
           _onCallStateChanged.add(CallState.incoming);
           _onIncomingCall.add(null); // Notify UI
 
@@ -327,6 +340,20 @@ class SignalingService {
         case 'error':
           print('Signaling error: ${data['message']}');
           _onCallStateChanged.add(CallState.error);
+          break;
+        case 'change-type':
+          // Remote side requests to switch call type
+          final requestedType = (data['callType'] as String?)?.toLowerCase() ?? 'audio';
+          print('🔄 Remote side requests call type change → $requestedType');
+          _onChangeTypeRequest.add(requestedType);
+          break;
+        case 'change-type-accepted':
+          // Remote side confirmed the type switch
+          final confirmedType = (data['callType'] as String?)?.toLowerCase() ?? 'audio';
+          print('✅ Remote side accepted call type change → $confirmedType');
+          _callType = confirmedType;
+          _applyCallTypeLocally(confirmedType);
+          _onCallTypeChanged.add(_callType);
           break;
         default:
           print('Unknown message type: $type');
@@ -436,6 +463,60 @@ class SignalingService {
     } catch (e) {
       print('Error rejecting call: $e');
     }
+  }
+
+  /// Locally apply a call type change by enabling/disabling video tracks
+  void _applyCallTypeLocally(String newType) {
+    if (_localStream == null) return;
+    final enable = newType == 'video';
+    for (var track in _localStream!.getVideoTracks()) {
+      track.enabled = enable;
+      print('${enable ? '🎥' : '🔇'} Local video track ${enable ? 'enabled' : 'disabled'}: ${track.id}');
+    }
+    // Remote video tracks
+    if (_remoteStream != null) {
+      for (var track in _remoteStream!.getVideoTracks()) {
+        track.enabled = enable;
+        print('${enable ? '🎥' : '🔇'} Remote video track ${enable ? 'enabled' : 'disabled'}: ${track.id}');
+      }
+    }
+    print('✅ Call type locally applied: $newType');
+  }
+
+  /// Request a call-type change (audio ↔ video).
+  /// Sends a change-type message to the remote peer; the change is applied
+  /// only after the remote peer confirms with change-type-accepted.
+  void requestChangeCallType(String newType) {
+    print('🔄 Requesting call type change → $newType');
+    _sendMessage({
+      'type': 'change-type',
+      'room': _roomName,
+      'callType': newType,
+      'calleeId': getUserId(),
+    });
+  }
+
+  /// Accept a change-type request from the remote peer.
+  /// [pendingType] should be the value received via onChangeTypeRequest.
+  /// Sends change-type-accept and applies the change locally.
+  void acceptChangeCallType(String pendingType) {
+    print('✅ Accepting call type change → $pendingType');
+    _callType = pendingType;
+    _applyCallTypeLocally(pendingType);
+    _onCallTypeChanged.add(_callType);
+
+    _sendMessage({
+      'type': 'change-type-accept',
+      'room': _roomName,
+      'callType': pendingType,
+      'calleeId': getUserId(),
+    });
+  }
+
+  /// Decline a change-type request from the remote peer.
+  void declineChangeCallType() {
+    print('❌ Declining call type change request');
+    // No standard "reject" message in the backend — just ignore.
   }
 
   /// Handle incoming offer from web caller
@@ -834,6 +915,8 @@ class SignalingService {
     _onRemoteStream.close();
     _onLocalStream.close();
     _onIncomingCall.close();
+    _onCallTypeChanged.close();
+    _onChangeTypeRequest.close();
   }
 }
 

@@ -16,7 +16,15 @@ class _CallScreenState extends State<CallScreen> {
   String _statusText = 'Initializing...';
   bool _isInitialized = false;
   bool _showIncomingCallUI = false;
-  String? _errorMessage; // Store error messages to display on screen
+  String? _errorMessage;
+
+  // Call type: 'audio' or 'video'
+  String _callType = 'video';
+  // Pending change-type request from remote peer
+  String? _pendingChangeTypeRequest;
+  // Local control state
+  bool _isMuted = false;
+  bool _isCameraOff = false;
 
   // Video renderers
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
@@ -85,6 +93,7 @@ class _CallScreenState extends State<CallScreen> {
         setState(() {
           _showIncomingCallUI = true;
           _callState = CallState.incoming;
+          _callType = _signalingService.callType; // sync call type from offer
           _statusText = '📞 Incoming Call!';
         });
 
@@ -140,6 +149,30 @@ class _CallScreenState extends State<CallScreen> {
             setState(() {});
           }
         });
+      });
+
+      // Listen to call type changes (confirmed switch)
+      _signalingService.onCallTypeChanged.listen((newType) {
+        print('🔄 Call type changed → $newType');
+        if (mounted) {
+          setState(() {
+            _callType = newType;
+            // Reset camera-off state when switching modes
+            if (newType == 'audio') _isCameraOff = true;
+            if (newType == 'video') _isCameraOff = false;
+          });
+        }
+      });
+
+      // Listen to incoming change-type requests from the remote peer
+      _signalingService.onChangeTypeRequest.listen((requestedType) {
+        print('🔔 Remote requests type change → $requestedType');
+        if (mounted) {
+          setState(() {
+            _pendingChangeTypeRequest = requestedType;
+          });
+          _showChangeTypeRequestDialog(requestedType);
+        }
       });
 
       setState(() {
@@ -281,6 +314,78 @@ class _CallScreenState extends State<CallScreen> {
     }
   }
 
+  void _toggleMute() {
+    final stream = _signalingService.localStream;
+    if (stream == null) return;
+    setState(() {
+      _isMuted = !_isMuted;
+    });
+    for (var track in stream.getAudioTracks()) {
+      track.enabled = !_isMuted;
+    }
+    print(_isMuted ? '🔇 Microphone muted' : '🎙️ Microphone unmuted');
+  }
+
+  void _toggleCamera() {
+    final stream = _signalingService.localStream;
+    if (stream == null) return;
+    setState(() {
+      _isCameraOff = !_isCameraOff;
+    });
+    for (var track in stream.getVideoTracks()) {
+      track.enabled = !_isCameraOff;
+    }
+    print(_isCameraOff ? '📷 Camera off' : '🎥 Camera on');
+  }
+
+  void _switchCallType() {
+    final targetType = _callType == 'video' ? 'audio' : 'video';
+    print('🔄 Requesting call type switch → $targetType');
+    _signalingService.requestChangeCallType(targetType);
+  }
+
+  void _showChangeTypeRequestDialog(String requestedType) {
+    final label = requestedType == 'video' ? 'Video Call' : 'Audio-only Call';
+    final icon = requestedType == 'video' ? Icons.videocam : Icons.mic;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(icon, color: Colors.blue),
+            const SizedBox(width: 8),
+            const Text('Call Type Change'),
+          ],
+        ),
+        content: Text('The other side wants to switch to $label. Do you accept?'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _signalingService.declineChangeCallType();
+              setState(() => _pendingChangeTypeRequest = null);
+            },
+            child: const Text('Decline', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _signalingService.acceptChangeCallType(requestedType);
+              setState(() {
+                _pendingChangeTypeRequest = null;
+                _callType = requestedType;
+                if (requestedType == 'audio') _isCameraOff = true;
+                if (requestedType == 'video') _isCameraOff = false;
+              });
+            },
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showErrorDialog(String message) {
     showDialog(
       context: context,
@@ -335,57 +440,97 @@ class _CallScreenState extends State<CallScreen> {
   Widget _buildVideoCallUI() {
     return Stack(
       children: [
-        // Remote video (full screen)
-        Container(
-          color: Colors.black,
-          child: Center(
-            child: _remoteVideoInitialized && _remoteRenderer.srcObject != null
-                ? RTCVideoView(
-                    _remoteRenderer,
-                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                    mirror: false,
-                    filterQuality: FilterQuality.medium,
-                  )
-                : Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const CircularProgressIndicator(color: Colors.white),
-                      const SizedBox(height: 20),
-                      Text(
-                        _remoteRenderer.srcObject == null
-                            ? 'Waiting for video...'
-                            : 'Loading video...',
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                    ],
-                  ),
-          ),
-        ),
+        // Remote media area (full screen)
+        _callType == 'video'
+            ? Container(
+                color: Colors.black,
+                child: Center(
+                  child: _remoteVideoInitialized && _remoteRenderer.srcObject != null
+                      ? RTCVideoView(
+                          _remoteRenderer,
+                          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                          mirror: false,
+                          filterQuality: FilterQuality.medium,
+                        )
+                      : Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const CircularProgressIndicator(color: Colors.white),
+                            const SizedBox(height: 20),
+                            Text(
+                              _remoteRenderer.srcObject == null
+                                  ? 'Waiting for video...'
+                                  : 'Loading video...',
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ],
+                        ),
+                ),
+              )
+            : _buildAudioOnlyBackground(),
 
-        // Local video (picture-in-picture)
-        Positioned(
-          top: 40,
-          right: 20,
-          child: Container(
-            width: 120,
-            height: 160,
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.white, width: 2),
-              borderRadius: BorderRadius.circular(12),
-              color: Colors.black,
+        // Local video (picture-in-picture) — only in video mode
+        if (_callType == 'video')
+          Positioned(
+            top: 40,
+            right: 20,
+            child: Container(
+              width: 120,
+              height: 160,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white, width: 2),
+                borderRadius: BorderRadius.circular(12),
+                color: Colors.black,
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: _isCameraOff
+                    ? const Center(child: Icon(Icons.videocam_off, color: Colors.white54, size: 36))
+                    : (_localVideoInitialized && _localRenderer.srcObject != null
+                        ? RTCVideoView(
+                            _localRenderer,
+                            mirror: true,
+                            objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                            filterQuality: FilterQuality.medium,
+                          )
+                        : const Center(child: Icon(Icons.person, color: Colors.white54, size: 40))),
+              ),
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: _localVideoInitialized && _localRenderer.srcObject != null
-                  ? RTCVideoView(
-                      _localRenderer,
-                      mirror: true,
-                      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                      filterQuality: FilterQuality.medium,
-                    )
-                  : const Center(
-                      child: Icon(Icons.person, color: Colors.white54, size: 40),
+          ),
+
+        // Call type badge
+        Positioned(
+          top: 16,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: _callType == 'video'
+                    ? Colors.blue.withValues(alpha: 0.8)
+                    : Colors.green.withValues(alpha: 0.8),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _callType == 'video' ? Icons.videocam : Icons.mic,
+                    color: Colors.white,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _callType == 'video' ? 'Video Call' : 'Audio Call',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
                     ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -395,34 +540,75 @@ class _CallScreenState extends State<CallScreen> {
           bottom: 40,
           left: 0,
           right: 0,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          child: Column(
             children: [
-              // End call button
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.red,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.3),
-                      blurRadius: 10,
-                      spreadRadius: 2,
+              // Secondary controls row (mute, camera, switch type)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Mute microphone
+                  _buildControlButton(
+                    icon: _isMuted ? Icons.mic_off : Icons.mic,
+                    color: _isMuted ? Colors.red.shade700 : Colors.white24,
+                    iconColor: Colors.white,
+                    onTap: _toggleMute,
+                    tooltip: _isMuted ? 'Unmute' : 'Mute',
+                  ),
+                  const SizedBox(width: 16),
+
+                  // Toggle camera (video mode only)
+                  if (_callType == 'video')
+                    _buildControlButton(
+                      icon: _isCameraOff ? Icons.videocam_off : Icons.videocam,
+                      color: _isCameraOff ? Colors.red.shade700 : Colors.white24,
+                      iconColor: Colors.white,
+                      onTap: _toggleCamera,
+                      tooltip: _isCameraOff ? 'Turn Camera On' : 'Turn Camera Off',
                     ),
-                  ],
-                ),
-                child: IconButton(
-                  icon: const Icon(Icons.call_end, size: 32),
-                  color: Colors.white,
-                  onPressed: _endCall,
-                  padding: const EdgeInsets.all(16),
-                ),
+                  if (_callType == 'video') const SizedBox(width: 16),
+
+                  // Switch call type
+                  _buildControlButton(
+                    icon: _callType == 'video' ? Icons.mic : Icons.videocam,
+                    color: Colors.white24,
+                    iconColor: Colors.white,
+                    onTap: _switchCallType,
+                    tooltip: _callType == 'video' ? 'Switch to Audio' : 'Switch to Video',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              // End call button
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.3),
+                          blurRadius: 10,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    child: IconButton(
+                      icon: const Icon(Icons.call_end, size: 32),
+                      color: Colors.white,
+                      onPressed: _endCall,
+                      padding: const EdgeInsets.all(16),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
         ),
 
-        // Call status indicator
+        // Connecting overlay
         if (_callState == CallState.connecting)
           Positioned(
             top: 100,
@@ -437,20 +623,16 @@ class _CallScreenState extends State<CallScreen> {
               ),
               child: const Text(
                 'Connecting...',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
             ),
           ),
 
-        // Error message display during call
+        // Error message during call
         if (_errorMessage != null)
           Positioned(
-            bottom: 120,
+            bottom: 140,
             left: 20,
             right: 20,
             child: Container(
@@ -458,36 +640,21 @@ class _CallScreenState extends State<CallScreen> {
               decoration: BoxDecoration(
                 color: Colors.red.withValues(alpha: 0.9),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Colors.white,
-                  width: 2,
-                ),
+                border: Border.all(color: Colors.white, width: 2),
               ),
               child: Row(
                 children: [
-                  const Icon(
-                    Icons.error_outline,
-                    color: Colors.white,
-                    size: 24,
-                  ),
+                  const Icon(Icons.error_outline, color: Colors.white, size: 24),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
                       _errorMessage!,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style: const TextStyle(fontSize: 14, color: Colors.white, fontWeight: FontWeight.bold),
                     ),
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: () {
-                      setState(() {
-                        _errorMessage = null;
-                      });
-                    },
+                    onPressed: () => setState(() => _errorMessage = null),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                   ),
@@ -499,7 +666,69 @@ class _CallScreenState extends State<CallScreen> {
     );
   }
 
+  /// Audio-only background — dark gradient with avatar and waveform icon
+  Widget _buildAudioOnlyBackground() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF1A237E), Color(0xFF0D1B3E)],
+        ),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.person, size: 70, color: Colors.white70),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Audio Call',
+              style: TextStyle(color: Colors.white70, fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            // Animated mic icon to indicate audio activity
+            const Icon(Icons.graphic_eq, color: Colors.greenAccent, size: 40),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildControlButton({
+    required IconData icon,
+    required Color color,
+    required Color iconColor,
+    required VoidCallback onTap,
+    required String tooltip,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 52,
+          height: 52,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: iconColor, size: 26),
+        ),
+      ),
+    );
+  }
+
   Widget _buildIncomingCallUI() {
+    final isVideo = _callType == 'video';
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(24.0),
@@ -507,25 +736,25 @@ class _CallScreenState extends State<CallScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // Large phone icon
+          // Large call icon
           Container(
             padding: const EdgeInsets.all(30),
             decoration: BoxDecoration(
               color: Colors.orange.withValues(alpha: 0.1),
               shape: BoxShape.circle,
             ),
-            child: const Icon(
-              Icons.phone_in_talk,
+            child: Icon(
+              isVideo ? Icons.videocam : Icons.phone_in_talk,
               size: 100,
               color: Colors.orange,
             ),
           ),
           const SizedBox(height: 40),
 
-          const Text(
-            'Incoming Call',
-            style: TextStyle(
-              fontSize: 32,
+          Text(
+            isVideo ? 'Incoming Video Call' : 'Incoming Audio Call',
+            style: const TextStyle(
+              fontSize: 28,
               fontWeight: FontWeight.bold,
               color: Colors.black87,
             ),
@@ -533,10 +762,7 @@ class _CallScreenState extends State<CallScreen> {
           const SizedBox(height: 16),
           const Text(
             'Web Caller',
-            style: TextStyle(
-              fontSize: 20,
-              color: Colors.grey,
-            ),
+            style: TextStyle(fontSize: 20, color: Colors.grey),
           ),
           const SizedBox(height: 80),
 
@@ -559,14 +785,7 @@ class _CallScreenState extends State<CallScreen> {
                     child: const Icon(Icons.call_end, size: 36),
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    'Reject',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.red,
-                    ),
-                  ),
+                  const Text('Reject', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.red)),
                 ],
               ),
 
@@ -582,17 +801,10 @@ class _CallScreenState extends State<CallScreen> {
                       padding: const EdgeInsets.all(28),
                       elevation: 8,
                     ),
-                    child: const Icon(Icons.call, size: 36),
+                    child: Icon(isVideo ? Icons.videocam : Icons.call, size: 36),
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    'Accept',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.green,
-                    ),
-                  ),
+                  const Text('Accept', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.green)),
                 ],
               ),
             ],
