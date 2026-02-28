@@ -79,6 +79,9 @@ class SignalingService {
   // Flag to track vibration state
   bool _isVibrating = false;
 
+  // Flag to track if we're in an active call
+  bool _isInCall = false;
+
   // Current call type: 'audio' or 'video'
   String _callType = 'video';
 
@@ -304,20 +307,35 @@ class SignalingService {
 
       switch (type) {
         case 'offer':
-          // Incoming call!
-          print('📞 INCOMING CALL!');
-          _pendingOffer = data['sdp']; // Store the offer
-          // Parse call type sent by caller (default to video)
-          _callType = (data['callType'] as String?)?.toLowerCase() == 'audio' ? 'audio' : 'video';
-          print('   📱 Call type: $_callType');
-          _onCallStateChanged.add(CallState.incoming);
-          _onIncomingCall.add(null); // Notify UI
+          if (_isInCall) {
+            // This is a renegotiation offer (e.g., after call type change)
+            print('🔄 Renegotiation offer received (call type change)');
+            final newCallType = (data['callType'] as String?)?.toLowerCase() ?? 'video';
+            print('   📱 New call type: $newCallType');
 
-          // Play ringtone
-          await _playRingtone();
+            // Handle the offer for renegotiation (don't show incoming call UI)
+            await _handleRenegotiationOffer(data['sdp'], newCallType);
+          } else {
+            // This is a new incoming call
+            print('📞 INCOMING CALL!');
+            _pendingOffer = data['sdp']; // Store the offer
+            // Parse call type sent by caller (default to video)
+            _callType = (data['callType'] as String?)?.toLowerCase() == 'audio' ? 'audio' : 'video';
+            print('   📱 Call type: $_callType');
+            _onCallStateChanged.add(CallState.incoming);
+            _onIncomingCall.add(null); // Notify UI
+
+            // Play ringtone
+            await _playRingtone();
+          }
           break;
         case 'ice-candidate':
           await _handleIceCandidate(data['candidate']);
+          break;
+        case 'answer':
+          // Remote side sent an answer (to our offer)
+          print('📥 Received answer from remote peer');
+          await _handleAnswer(data['sdp']);
           break;
         case 'call-accepted':
           // Remote side accepted the call
@@ -351,9 +369,13 @@ class SignalingService {
           // Remote side confirmed the type switch
           final confirmedType = (data['callType'] as String?)?.toLowerCase() ?? 'audio';
           print('✅ Remote side accepted call type change → $confirmedType');
+
+          // Update call type
           _callType = confirmedType;
-          _applyCallTypeLocally(confirmedType);
-          _onCallTypeChanged.add(_callType);
+
+          // Now create and send a renegotiation offer
+          print('   📤 Creating renegotiation offer...');
+          await _createAndSendRenegotiationOffer(confirmedType);
           break;
         default:
           print('Unknown message type: $type');
@@ -427,6 +449,10 @@ class SignalingService {
       // Now handle the offer and create answer
       await _handleOffer(_pendingOffer!);
       _pendingOffer = null; // Clear pending offer
+
+      // Mark that we're now in an active call
+      _isInCall = true;
+      print('✅ Call accepted - now in active call');
     } catch (e) {
       print('❌ Error accepting call: $e');
       _onCallStateChanged.add(CallState.error);
@@ -465,6 +491,44 @@ class SignalingService {
     }
   }
 
+  /// Create and send a renegotiation offer after call type change is accepted
+  Future<void> _createAndSendRenegotiationOffer(String newCallType) async {
+    try {
+      print('🔄 Creating renegotiation offer for call type: $newCallType');
+
+      // Apply the new call type locally
+      _applyCallTypeLocally(newCallType);
+
+      // Create a new offer with updated constraints
+      RTCSessionDescription offer = await _peerConnection!.createOffer({
+        'mandatory': {
+          'OfferToReceiveAudio': true,
+          'OfferToReceiveVideo': newCallType == 'video',
+        },
+      });
+
+      // Set local description
+      await _peerConnection!.setLocalDescription(offer);
+      print('✅ Local description (renegotiation offer) set');
+
+      // Send the offer
+      _sendMessage({
+        'type': 'offer',
+        'room': _roomName,
+        'sdp': {
+          'type': offer.type,
+          'sdp': offer.sdp,
+        },
+        'callType': newCallType,
+        'calleeId': getUserId(),
+      });
+
+      print('✅ Renegotiation offer sent - call type: $newCallType');
+    } catch (e) {
+      print('❌ Error creating renegotiation offer: $e');
+    }
+  }
+
   /// Locally apply a call type change by enabling/disabling video tracks
   void _applyCallTypeLocally(String newType) {
     if (_localStream == null) return;
@@ -484,10 +548,19 @@ class SignalingService {
   }
 
   /// Request a call-type change (audio ↔ video).
-  /// Sends a change-type message to the remote peer; the change is applied
-  /// only after the remote peer confirms with change-type-accepted.
-  void requestChangeCallType(String newType) {
+  /// Sends a change-type request. When remote accepts, we'll create and send
+  /// a new offer for renegotiation.
+  Future<void> requestChangeCallType(String newType) async {
     print('🔄 Requesting call type change → $newType');
+    try {
+      if (newType == 'video') {
+        await _ensureVideoTrack();
+      } else {
+        await _removeVideoTracks();
+      }
+    } catch (e) {
+      print('⚠️ Could not prepare tracks for type change request: $e');
+    }
     _sendMessage({
       'type': 'change-type',
       'room': _roomName,
@@ -498,25 +571,211 @@ class SignalingService {
 
   /// Accept a change-type request from the remote peer.
   /// [pendingType] should be the value received via onChangeTypeRequest.
-  /// Sends change-type-accept and applies the change locally.
-  void acceptChangeCallType(String pendingType) {
+  /// Sends change-type-accept. The actual media change will happen when we receive
+  /// the renegotiation offer from the remote peer.
+  Future<void> acceptChangeCallType(String pendingType) async {
     print('✅ Accepting call type change → $pendingType');
-    _callType = pendingType;
-    _applyCallTypeLocally(pendingType);
-    _onCallTypeChanged.add(_callType);
 
+    try {
+      if (pendingType == 'video') {
+        // Switching to video: prepare video track
+        await _ensureVideoTrack();
+      } else {
+        // Switching to audio: prepare to remove video
+        await _removeVideoTracks();
+      }
+    } catch (e) {
+      print('⚠️ Error preparing tracks for type switch: $e');
+    }
+
+    // Send acceptance - remote will then send a renegotiation offer
     _sendMessage({
       'type': 'change-type-accept',
       'room': _roomName,
       'callType': pendingType,
       'calleeId': getUserId(),
     });
+
+    print('   ⏳ Waiting for renegotiation offer from remote...');
+  }
+
+  /// Ensure a local video track exists and is added to the peer connection.
+  Future<void> _ensureVideoTrack() async {
+    if (_peerConnection == null) return;
+
+    // Check if we already have a live video track in _localStream
+    final existingVideoTracks = _localStream?.getVideoTracks() ?? [];
+    if (existingVideoTracks.isNotEmpty && existingVideoTracks.first.enabled) {
+      print('🎥 Video track already exists and enabled');
+      for (var t in existingVideoTracks) {
+        t.enabled = true;
+      }
+      return;
+    }
+
+    print('📷 Acquiring new video track for type switch...');
+    try {
+      // Get a new video-only stream
+      final videoStream = await navigator.mediaDevices.getUserMedia({
+        'audio': false,
+        'video': {'facingMode': 'user'},
+      });
+
+      final newVideoTrack = videoStream.getVideoTracks().first;
+      newVideoTrack.enabled = true;
+
+      // Try to replace via existing sender first (cleaner renegotiation)
+      final senders = await _peerConnection!.getSenders();
+      RTCRtpSender? videoSender;
+      for (final s in senders) {
+        if (s.track?.kind == 'video') {
+          videoSender = s;
+          break;
+        }
+      }
+
+      if (videoSender != null) {
+        await videoSender.replaceTrack(newVideoTrack);
+        print('✅ Replaced video track via sender');
+      } else {
+        // No video sender yet — add track from scratch
+        if (_localStream != null) {
+          _localStream!.addTrack(newVideoTrack);
+          await _peerConnection!.addTrack(newVideoTrack, _localStream!);
+        } else {
+          _localStream = videoStream;
+          await _peerConnection!.addTrack(newVideoTrack, _localStream!);
+        }
+        print('✅ Added new video track to peer connection');
+      }
+
+      // Add the new track to _localStream so the UI can show it
+      if (_localStream != null && !_localStream!.getVideoTracks().contains(newVideoTrack)) {
+        _localStream!.addTrack(newVideoTrack);
+      }
+
+      _onLocalStream.add(_localStream!);
+    } catch (e) {
+      print('❌ Failed to acquire video track: $e');
+      rethrow;
+    }
+  }
+
+  /// Disable and remove video tracks from the peer connection senders.
+  Future<void> _removeVideoTracks() async {
+    if (_peerConnection == null) return;
+
+    // Disable local video tracks
+    _localStream?.getVideoTracks().forEach((t) {
+      t.enabled = false;
+      t.stop();
+      print('🔇 Stopped local video track: ${t.id}');
+    });
+
+    // Null out the track on the sender so the remote side stops receiving video
+    final senders = await _peerConnection!.getSenders();
+    for (final s in senders) {
+      if (s.track?.kind == 'video') {
+        try {
+          await s.replaceTrack(null);
+          print('🔇 Removed video track from sender');
+        } catch (e) {
+          print('⚠️ Could not null video sender track: $e');
+        }
+      }
+    }
   }
 
   /// Decline a change-type request from the remote peer.
   void declineChangeCallType() {
     print('❌ Declining call type change request');
     // No standard "reject" message in the backend — just ignore.
+  }
+
+  /// Handle answer from remote peer (for renegotiation or initial call setup)
+  Future<void> _handleAnswer(Map<String, dynamic> sdpMap) async {
+    try {
+      print('📥 Processing answer from remote peer...');
+
+      RTCSessionDescription answer = RTCSessionDescription(
+        sdpMap['sdp'],
+        sdpMap['type'],
+      );
+
+      // Set remote description (the answer)
+      await _peerConnection!.setRemoteDescription(answer);
+      print('✅ Remote description (answer) set');
+
+      // If this was for a renegotiation, notify UI
+      if (_isInCall) {
+        print('✅ Renegotiation answer applied - media tracks updated');
+        _onCallTypeChanged.add(_callType);
+      }
+    } catch (e) {
+      print('❌ Error handling answer: $e');
+    }
+  }
+
+  /// Handle renegotiation offer (e.g., after call type change)
+  Future<void> _handleRenegotiationOffer(Map<String, dynamic> sdpMap, String newCallType) async {
+    try {
+      print('🔄 Processing renegotiation offer...');
+      print('   Current call type: $_callType → New call type: $newCallType');
+
+      RTCSessionDescription offer = RTCSessionDescription(
+        sdpMap['sdp'],
+        sdpMap['type'],
+      );
+
+      // Set remote description (the new offer)
+      await _peerConnection!.setRemoteDescription(offer);
+      print('✅ Remote description (renegotiation offer) set');
+
+      // Update call type
+      _callType = newCallType;
+
+      // Apply the new call type locally (enable/disable video)
+      _applyCallTypeLocally(newCallType);
+
+      // If switching to video and we don't have a video track, acquire one
+      if (newCallType == 'video') {
+        final existingVideoTracks = _localStream?.getVideoTracks() ?? [];
+        if (existingVideoTracks.isEmpty || !existingVideoTracks.first.enabled) {
+          print('📷 Acquiring video track for renegotiation...');
+          await _ensureVideoTrack();
+        }
+      }
+
+      // Create answer with proper video/audio constraints
+      RTCSessionDescription answer = await _peerConnection!.createAnswer({
+        'mandatory': {
+          'OfferToReceiveAudio': true,
+          'OfferToReceiveVideo': newCallType == 'video',
+        },
+      });
+
+      // Set local description (our answer)
+      await _peerConnection!.setLocalDescription(answer);
+      print('✅ Local description (renegotiation answer) set');
+
+      // Send answer back
+      _sendMessage({
+        'type': 'answer',
+        'room': _roomName,
+        'sdp': {
+          'type': answer.type,
+          'sdp': answer.sdp,
+        },
+        'calleeId': getUserId()
+      });
+
+      // Notify UI about the call type change
+      _onCallTypeChanged.add(newCallType);
+
+      print('✅ Renegotiation complete - call type changed to $newCallType');
+    } catch (e) {
+      print('❌ Error handling renegotiation offer: $e');
+    }
   }
 
   /// Handle incoming offer from web caller
@@ -721,6 +980,9 @@ class SignalingService {
       _isReconnecting = true;
       print('Ending call...');
 
+      // Reset call state
+      _isInCall = false;
+
       // Notify the other side that we ended the call
       if (_channel != null) {
         _sendMessage({
@@ -777,6 +1039,9 @@ class SignalingService {
     try {
       _isReconnecting = true;
       print('Handling remote end call...');
+
+      // Reset call state
+      _isInCall = false;
 
       // Stop and dispose streams
       _localStream?.getTracks().forEach((track) {

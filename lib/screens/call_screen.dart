@@ -152,16 +152,41 @@ class _CallScreenState extends State<CallScreen> {
       });
 
       // Listen to call type changes (confirmed switch)
-      _signalingService.onCallTypeChanged.listen((newType) {
+      _signalingService.onCallTypeChanged.listen((newType) async {
         print('🔄 Call type changed → $newType');
-        if (mounted) {
-          setState(() {
-            _callType = newType;
-            // Reset camera-off state when switching modes
-            if (newType == 'audio') _isCameraOff = true;
-            if (newType == 'video') _isCameraOff = false;
-          });
-        }
+        if (!mounted) return;
+
+        // 1. Detach srcObjects so old EGL surfaces are released cleanly
+        setState(() {
+          _localRenderer.srcObject = null;
+          _remoteRenderer.srcObject = null;
+        });
+
+        // 2. Wait one frame for Flutter to tear down the old RTCVideoView widgets
+        await Future.delayed(const Duration(milliseconds: 150));
+        if (!mounted) return;
+
+        // 3. Re-attach streams and update call type in one setState
+        setState(() {
+          _callType = newType;
+          if (newType == 'audio') _isCameraOff = true;
+          if (newType == 'video') _isCameraOff = false;
+
+          final localStream = _signalingService.localStream;
+          final remoteStream = _signalingService.remoteStream;
+          if (localStream != null) {
+            _localRenderer.srcObject = localStream;
+            print('🔄 Re-attached local stream to renderer after type change');
+          }
+          if (remoteStream != null) {
+            _remoteRenderer.srcObject = remoteStream;
+            print('🔄 Re-attached remote stream to renderer after type change');
+          }
+        });
+
+        // 4. Force another rebuild after EGL surfaces settle
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (mounted) setState(() {});
       });
 
       // Listen to incoming change-type requests from the remote peer
@@ -338,10 +363,10 @@ class _CallScreenState extends State<CallScreen> {
     print(_isCameraOff ? '📷 Camera off' : '🎥 Camera on');
   }
 
-  void _switchCallType() {
+  void _switchCallType() async {
     final targetType = _callType == 'video' ? 'audio' : 'video';
     print('🔄 Requesting call type switch → $targetType');
-    _signalingService.requestChangeCallType(targetType);
+    await _signalingService.requestChangeCallType(targetType);
   }
 
   void _showChangeTypeRequestDialog(String requestedType) {
@@ -369,9 +394,9 @@ class _CallScreenState extends State<CallScreen> {
             child: const Text('Decline', style: TextStyle(color: Colors.red)),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              _signalingService.acceptChangeCallType(requestedType);
+              await _signalingService.acceptChangeCallType(requestedType);
               setState(() {
                 _pendingChangeTypeRequest = null;
                 _callType = requestedType;
@@ -447,6 +472,7 @@ class _CallScreenState extends State<CallScreen> {
                 child: Center(
                   child: _remoteVideoInitialized && _remoteRenderer.srcObject != null
                       ? RTCVideoView(
+                          key: ValueKey('remote_video_$_callType'),
                           _remoteRenderer,
                           objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
                           mirror: false,
@@ -488,6 +514,7 @@ class _CallScreenState extends State<CallScreen> {
                     ? const Center(child: Icon(Icons.videocam_off, color: Colors.white54, size: 36))
                     : (_localVideoInitialized && _localRenderer.srcObject != null
                         ? RTCVideoView(
+                            key: ValueKey('local_video_$_callType'),
                             _localRenderer,
                             mirror: true,
                             objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
