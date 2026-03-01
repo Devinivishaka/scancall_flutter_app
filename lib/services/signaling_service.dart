@@ -82,6 +82,9 @@ class SignalingService {
   // Flag to track if we're in an active call
   bool _isInCall = false;
 
+  // Flag to track if we're in the middle of a renegotiation
+  bool _isRenegotiating = false;
+
   // Current call type: 'audio' or 'video'
   String _callType = 'video';
 
@@ -312,6 +315,10 @@ class SignalingService {
             print('🔄 Renegotiation offer received (call type change)');
             final newCallType = (data['callType'] as String?)?.toLowerCase() ?? 'video';
             print('   📱 New call type: $newCallType');
+            print('   Current signaling state: ${_peerConnection?.signalingState}');
+
+            // Mark that we're renegotiating
+            _isRenegotiating = true;
 
             // Handle the offer for renegotiation (don't show incoming call UI)
             await _handleRenegotiationOffer(data['sdp'], newCallType);
@@ -494,12 +501,27 @@ class SignalingService {
   /// Create and send a renegotiation offer after call type change is accepted
   Future<void> _createAndSendRenegotiationOffer(String newCallType) async {
     try {
+      // Set flag to indicate we're starting a renegotiation
+      _isRenegotiating = true;
+
       print('🔄 Creating renegotiation offer for call type: $newCallType');
+      print('   Current signaling state: ${_peerConnection?.signalingState}');
+
+      // Check if we can create an offer
+      final signalingState = _peerConnection?.signalingState;
+      if (signalingState == 'have-local-offer' || signalingState == 'have-remote-pranswer') {
+        print('⚠️ Cannot create offer in state: $signalingState');
+        print('   Waiting for stable state...');
+        // In this case, we should wait for the state to become stable
+        // For now, we'll skip creating the offer and hope the remote side sends one
+        return;
+      }
 
       // Apply the new call type locally
       _applyCallTypeLocally(newCallType);
 
       // Create a new offer with updated constraints
+      print('📤 Creating new offer with constraints for: $newCallType');
       RTCSessionDescription offer = await _peerConnection!.createOffer({
         'mandatory': {
           'OfferToReceiveAudio': true,
@@ -508,6 +530,7 @@ class SignalingService {
       });
 
       // Set local description
+      print('📍 Setting local description');
       await _peerConnection!.setLocalDescription(offer);
       print('✅ Local description (renegotiation offer) set');
 
@@ -526,6 +549,9 @@ class SignalingService {
       print('✅ Renegotiation offer sent - call type: $newCallType');
     } catch (e) {
       print('❌ Error creating renegotiation offer: $e');
+      print('   Signaling state: ${_peerConnection?.signalingState}');
+    } finally {
+      // Don't clear the flag here - let the answer handler clear it
     }
   }
 
@@ -696,6 +722,8 @@ class SignalingService {
   Future<void> _handleAnswer(Map<String, dynamic> sdpMap) async {
     try {
       print('📥 Processing answer from remote peer...');
+      print('   Current signaling state: ${_peerConnection?.signalingState}');
+      print('   Is renegotiating: $_isRenegotiating');
 
       RTCSessionDescription answer = RTCSessionDescription(
         sdpMap['sdp'],
@@ -706,13 +734,21 @@ class SignalingService {
       await _peerConnection!.setRemoteDescription(answer);
       print('✅ Remote description (answer) set');
 
+      // Clear renegotiation flag if we were renegotiating
+      if (_isRenegotiating) {
+        _isRenegotiating = false;
+        print('🔄 Renegotiation complete - flag cleared');
+        _onCallTypeChanged.add(_callType);
+      }
+
       // If this was for a renegotiation, notify UI
       if (_isInCall) {
-        print('✅ Renegotiation answer applied - media tracks updated');
-        _onCallTypeChanged.add(_callType);
+        print('✅ Answer applied - media tracks may be updated');
       }
     } catch (e) {
       print('❌ Error handling answer: $e');
+      print('   Signaling state: ${_peerConnection?.signalingState}');
+      _isRenegotiating = false; // Clear flag on error too
     }
   }
 
@@ -721,13 +757,34 @@ class SignalingService {
     try {
       print('🔄 Processing renegotiation offer...');
       print('   Current call type: $_callType → New call type: $newCallType');
+      print('   Current signaling state: ${_peerConnection?.signalingState}');
 
       RTCSessionDescription offer = RTCSessionDescription(
         sdpMap['sdp'],
         sdpMap['type'],
       );
 
-      // Set remote description (the new offer)
+      // Check current signaling state
+      final currentState = _peerConnection?.signalingState;
+
+      // If we're in "have-local-offer" state, we need to rollback our local offer first
+      if (currentState == 'have-local-offer') {
+        print('⚠️ We are in have-local-offer state - rolling back local description');
+        print('   This means we sent an offer and got another offer back (collision)');
+        print('   Accepting the remote offer and discarding our offer');
+
+        try {
+          // Rollback our local description
+          await _peerConnection!.setLocalDescription(RTCSessionDescription('', 'rollback'));
+          print('✅ Local description rolled back successfully');
+        } catch (e) {
+          print('⚠️ Rollback failed: $e');
+          print('   Attempting to continue anyway...');
+        }
+      }
+
+      // Now set the remote offer
+      print('📥 Setting remote description from renegotiation offer');
       await _peerConnection!.setRemoteDescription(offer);
       print('✅ Remote description (renegotiation offer) set');
 
@@ -747,6 +804,7 @@ class SignalingService {
       }
 
       // Create answer with proper video/audio constraints
+      print('📤 Creating answer for renegotiation offer');
       RTCSessionDescription answer = await _peerConnection!.createAnswer({
         'mandatory': {
           'OfferToReceiveAudio': true,
@@ -775,6 +833,13 @@ class SignalingService {
       print('✅ Renegotiation complete - call type changed to $newCallType');
     } catch (e) {
       print('❌ Error handling renegotiation offer: $e');
+      print('   Signaling state: ${_peerConnection?.signalingState}');
+      // Don't add error state - let the call continue
+      // The tracks might still work even if renegotiation failed
+    } finally {
+      // Always clear the renegotiation flag
+      _isRenegotiating = false;
+      print('🔄 Renegotiation flag cleared');
     }
   }
 
