@@ -9,6 +9,7 @@ import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
 import 'package:flutter_callkit_incoming/entities/ios_params.dart';
 import 'package:flutter_callkit_incoming/entities/notification_params.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/call_screen.dart';
 
@@ -99,8 +100,167 @@ Future<void> _showIncomingCall(Map<String, dynamic> data) async {
   print('✅ Incoming call UI shown successfully');
 }
 
+/// Show a popup dialog asking user to grant permissions
+Future<void> _showPermissionDialog(BuildContext context) async {
+  bool permissionsGranted = false;
+
+  while (!permissionsGranted) {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('🎥 Permissions Required'),
+          content: const SingleChildScrollView(
+            child: ListBody(
+              children: <Widget>[
+                Text(
+                  'ScanCall needs the following permissions to work:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                SizedBox(height: 12),
+                Text('📷 Camera - To enable video calls'),
+                SizedBox(height: 8),
+                Text('🎤 Microphone - For audio and video calls'),
+                SizedBox(height: 8),
+                Text('🔔 Notifications - For incoming call alerts'),
+                SizedBox(height: 16),
+                Text(
+                  'Please grant these permissions to continue.',
+                  style: TextStyle(fontStyle: FontStyle.italic, color: Colors.red),
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                print('⚠️ User skipped permissions - app may not work properly');
+                permissionsGranted = true; // Allow proceeding anyway
+              },
+              child: const Text('Skip for Now'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // Request permissions
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text(
+                'Grant Permissions Now',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    // After dialog closes, request permissions if not skipped
+    if (!permissionsGranted) {
+      final granted = await _requestCameraAndMicrophonePermissions();
+      permissionsGranted = granted;
+
+      // If permissions still not granted, show status dialog
+      if (!permissionsGranted && context.mounted) {
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: const Text('⚠️ Permissions Status'),
+              content: const Text(
+                'Some permissions were not granted. Video calls may not work properly. '
+                'Please grant permissions in the system settings.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    print('User dismissed permission status');
+                    permissionsGranted = true; // Continue anyway
+                  },
+                  child: const Text('Continue'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    openAppSettings(); // Open phone settings
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Open Settings'),
+                ),
+              ],
+            );
+          },
+        );
+      }
+    }
+  }
+}
+
+/// Request camera and microphone permissions required for video calls
+/// Returns true if BOTH camera and microphone permissions are granted
+Future<bool> _requestCameraAndMicrophonePermissions() async {
+  try {
+    print('🎥 Requesting camera and microphone permissions...');
+
+    // Request both camera and microphone permissions
+    final statuses = await [
+      Permission.camera,
+      Permission.microphone,
+    ].request();
+
+    bool cameraGranted = false;
+    bool microphoneGranted = false;
+
+    // Check camera permission
+    if (statuses[Permission.camera]?.isGranted ?? false) {
+      print('✅ Camera permission GRANTED');
+      cameraGranted = true;
+    } else if (statuses[Permission.camera]?.isDenied ?? false) {
+      print('❌ Camera permission DENIED - video calls may not work');
+      print('   Go to Settings > Apps > ScanCall > Permissions and enable Camera');
+    } else if (statuses[Permission.camera]?.isPermanentlyDenied ?? false) {
+      print('🔒 Camera permission PERMANENTLY DENIED');
+      print('   Go to Settings > Apps > ScanCall > Permissions and enable Camera');
+    }
+
+    // Check microphone permission
+    if (statuses[Permission.microphone]?.isGranted ?? false) {
+      print('✅ Microphone permission GRANTED');
+      microphoneGranted = true;
+    } else if (statuses[Permission.microphone]?.isDenied ?? false) {
+      print('❌ Microphone permission DENIED - audio/video calls may not work');
+      print('   Go to Settings > Apps > ScanCall > Permissions and enable Microphone');
+    } else if (statuses[Permission.microphone]?.isPermanentlyDenied ?? false) {
+      print('🔒 Microphone permission PERMANENTLY DENIED');
+      print('   Go to Settings > Apps > ScanCall > Permissions and enable Microphone');
+    }
+
+    if (cameraGranted && microphoneGranted) {
+      print('✅ ALL PERMISSIONS GRANTED - Ready for video calls');
+      return true;
+    } else {
+      print('❌ SOME PERMISSIONS DENIED');
+      return false;
+    }
+  } catch (e) {
+    print('❌ Error requesting permissions: $e');
+    return false;
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
 
   // Try to initialize Firebase but don't crash the app if it fails. Many
   // developers forget to add android/app/google-services.json or to apply the
@@ -238,6 +398,13 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
     _listenCallKitEvents();
+
+    // Show permission dialog after a short delay to ensure UI is ready
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        _showPermissionDialog(context);
+      }
+    });
   }
 
   /// Listen for CallKit accept/decline events
