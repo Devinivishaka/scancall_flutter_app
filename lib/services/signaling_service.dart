@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class SignalingService {
 
-  static const String _signalingServerUrl = 'ws://10.0.2.2:8080/ws';
+  static const String _signalingServerUrl = 'ws://192.168.1.31:8080/ws';
 
   // Hard-coded room name
   static const String _roomName = 'test-call';
