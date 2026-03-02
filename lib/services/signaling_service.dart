@@ -403,16 +403,13 @@ class SignalingService {
           _onChangeTypeRequest.add(requestedType);
           break;
         case 'change-type-accepted':
-          // Remote side confirmed the type switch
+          // Remote side (web) confirmed it accepted our type-switch request.
+          // Web is always the offerer — it will now send a renegotiation offer.
+          // We just update our internal callType and wait for the incoming offer.
           final confirmedType = (data['callType'] as String?)?.toLowerCase() ?? 'audio';
           print('✅ Remote side accepted call type change → $confirmedType');
-
-          // Update call type
           _callType = confirmedType;
-
-          // Now create and send a renegotiation offer
-          print('   📤 Creating renegotiation offer...');
-          await _createAndSendRenegotiationOffer(confirmedType);
+          print('   ⏳ Waiting for renegotiation offer from web...');
           break;
         default:
           print('Unknown message type: $type');

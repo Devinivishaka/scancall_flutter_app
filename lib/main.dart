@@ -73,6 +73,9 @@ class _MyAppState extends State<MyApp> {
   // Use existing SignalingService with WebSocket server, TURN servers, backend endpoints
   final SignalingService _signalingService = SignalingService();
 
+  // Used to show dialogs (e.g. incoming call-type change) regardless of which screen is active
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
   CallState _callState = CallState.idle;
   String _statusText = 'Initializing...';
   bool _showIncomingCallUI = false;
@@ -143,12 +146,50 @@ class _MyAppState extends State<MyApp> {
       });
     });
 
-    // Listen to call type changes
+    // Listen to call type changes (confirmed after renegotiation completes)
     _signalingService.onCallTypeChanged.listen((newType) {
       setState(() {
         _callType = newType;
       });
       print('🔄 Call type changed → $newType');
+    });
+
+    // Listen to call-type-change REQUESTS from the remote (web) side.
+    _signalingService.onChangeTypeRequest.listen((requestedType) {
+      print('🔄 Web requesting call type change → $requestedType');
+      if (requestedType == 'audio') {
+        // Video → Audio: auto-accept immediately, no permission needed.
+        print('🔇 Auto-accepting video→audio switch');
+        _signalingService.acceptChangeCallType(requestedType);
+      } else {
+        // Audio → Video: show a permission dialog on the current screen.
+        final ctx = _navigatorKey.currentContext;
+        if (ctx != null && mounted) {
+          showDialog<void>(
+            context: ctx,
+            barrierDismissible: false,
+            builder: (dialogCtx) => AlertDialog(
+              title: const Text('Switch to Video Call?'),
+              content: const Text(
+                'The web caller wants to switch to a video call. Allow?',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogCtx).pop(),
+                  child: const Text('Decline'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(dialogCtx).pop();
+                    _signalingService.acceptChangeCallType(requestedType);
+                  },
+                  child: const Text('Accept'),
+                ),
+              ],
+            ),
+          );
+        }
+      }
     });
 
     // Register FCM token with backend so the server can send push notifications.
@@ -309,11 +350,17 @@ class _MyAppState extends State<MyApp> {
               local: _localRenderer,
               remote: _remoteRenderer,
               onEnd: _endCall,
+              onChangeType: () =>
+                  _signalingService.requestChangeCallType('video'),
             )
           : VideoCallScreen(
               local: _localRenderer,
               remote: _remoteRenderer,
               onEnd: _endCall,
+              callType: _callType,
+              onChangeType: () => _signalingService.requestChangeCallType(
+                _callType == 'video' ? 'audio' : 'video',
+              ),
             );
     }
     // Show waiting screen
@@ -324,6 +371,7 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'ScanCall',
+      navigatorKey: _navigatorKey,
       theme: ThemeData(
         primarySwatch: Colors.blue,
         useMaterial3: true,

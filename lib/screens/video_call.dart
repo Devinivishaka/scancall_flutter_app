@@ -6,12 +6,16 @@ class VideoCallScreen extends StatefulWidget {
   final RTCVideoRenderer local;
   final RTCVideoRenderer remote;
   final VoidCallback onEnd;
+  final String callType;
+  final VoidCallback onChangeType;
 
   const VideoCallScreen({
     super.key,
     required this.local,
     required this.remote,
     required this.onEnd,
+    this.callType = 'video',
+    required this.onChangeType,
   });
 
   @override
@@ -303,6 +307,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                   activeIcon: Icons.cameraswitch_outlined,
                   active: true,
                   onTap: switchCamera,
+                ),
+
+                // Switch call type (audio ↔ video)
+                controlButton(
+                  icon: widget.callType == 'video'
+                      ? Icons.videocam_off
+                      : Icons.videocam,
+                  active: true,
+                  onTap: widget.onChangeType,
                 ),
 
                 // END CALL

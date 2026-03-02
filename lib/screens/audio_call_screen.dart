@@ -9,6 +9,7 @@ class AudioCallScreen extends StatefulWidget {
   final RTCVideoRenderer local;
   final RTCVideoRenderer remote;
   final VoidCallback onEnd;
+  final VoidCallback onChangeType;
 
   const AudioCallScreen({
     super.key,
@@ -17,6 +18,7 @@ class AudioCallScreen extends StatefulWidget {
     required this.local,
     required this.remote,
     required this.onEnd,
+    required this.onChangeType,
   });
 
   @override
@@ -170,9 +172,9 @@ class _AudioCallScreenState extends State<AudioCallScreen> {
                             onTap: toggleSpeaker,
                           ),
                           _bottomButton(
-                            icon: Icons.videocam_off,
-                            active: false,
-                            onTap: () {},
+                            icon: Icons.videocam,
+                            active: true,
+                            onTap: widget.onChangeType,
                           ),
                           _bottomButton(
                             icon: Icons.call_end,
