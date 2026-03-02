@@ -151,6 +151,20 @@ class _MyAppState extends State<MyApp> {
       print('🔄 Call type changed → $newType');
     });
 
+    // Register FCM token with backend so the server can send push notifications.
+    // This runs in background — a failure does not block the app.
+    try {
+      final fcmToken = await FirebaseMessaging.instance.getToken();
+      if (fcmToken != null) {
+        print('📲 FCM token: $fcmToken');
+        await _signalingService.registerFcmToken(fcmToken);
+      } else {
+        print('⚠️ Could not retrieve FCM token');
+      }
+    } catch (e) {
+      print('⚠️ FCM token registration failed: $e');
+    }
+
     // Connect to signaling server and wait for calls
     await _signalingService.connectAndWaitForCalls();
 

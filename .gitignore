@@ -44,4 +44,10 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Demo project (reference only, not tracked)
 /Scan-call-demo---mobile-app/
+
+# Generated documentation and reference files
+web_frontend_fixed.tsx
+WEB_FRONTEND_BACKEND_FIXES.md
+WHAT_WAS_DONE.md

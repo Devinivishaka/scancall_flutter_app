@@ -30,12 +30,42 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   void initState() {
     super.initState();
 
+    // Listen to renderer changes so the video views rebuild when streams
+    // arrive. RTCVideoRenderer extends ChangeNotifier and notifies whenever
+    // a new frame is ready or its srcObject changes.
+    widget.local.addListener(_onRendererUpdate);
+    widget.remote.addListener(_onRendererUpdate);
+
     widget.remote.onResize = () {
       print(
         "REMOTE VIDEO SIZE: ${widget.remote.videoWidth}x${widget.remote.videoHeight}",
       );
-      setState(() {});
+      if (mounted) setState(() {});
     };
+  }
+
+  @override
+  void didUpdateWidget(VideoCallScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.local != widget.local) {
+      oldWidget.local.removeListener(_onRendererUpdate);
+      widget.local.addListener(_onRendererUpdate);
+    }
+    if (oldWidget.remote != widget.remote) {
+      oldWidget.remote.removeListener(_onRendererUpdate);
+      widget.remote.addListener(_onRendererUpdate);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.local.removeListener(_onRendererUpdate);
+    widget.remote.removeListener(_onRendererUpdate);
+    super.dispose();
+  }
+
+  void _onRendererUpdate() {
+    if (mounted) setState(() {});
   }
 
   // Toggle Microphone
@@ -114,8 +144,10 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       body: Stack(
         children: [
           // REMOTE VIDEO
+          // RTCVideoRenderer.textureId is always non-null after initialize().
+          // Use srcObject to decide whether a stream has arrived yet.
           Positioned.fill(
-            child: widget.remote.textureId == null
+            child: widget.remote.srcObject == null
                 ? const Center(
                     child: Text(
                       "Waiting for Caller...",

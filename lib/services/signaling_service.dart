@@ -1,18 +1,22 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import 'package:vibration/vibration.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 class SignalingService {
 
   static const String _signalingServerUrl = 'ws://192.168.1.31:8080/ws';
+  static const String _backendBaseUrl = 'http://192.168.1.31:8080';
 
-  // Hard-coded room name
-  static const String _roomName = 'test-call';
+  // Room name equals the device's userId — resolved on first connectAndWaitForCalls() call.
+  // Using your own userId as the room name lets the web caller target you directly.
+  String _roomName = '';
 
   // Hard-coded TURN/STUN configuration
   //
@@ -260,10 +264,17 @@ class SignalingService {
     }
   }
 
-  /// Connect to the signaling server and wait for incoming calls
+  /// Connect to the signaling server and wait for incoming calls.
+  /// Uses the device's persisted userId as the room name so the web caller
+  /// can target this device by room = userId.
   Future<void> connectAndWaitForCalls() async {
     try {
       _onCallStateChanged.add(CallState.waiting);
+
+      // Resolve userId first — this also ensures a UUID is generated on first run
+      final userId = await getUserId();
+      _roomName = userId;
+      print('📡 Joining room: $_roomName (= userId)');
 
       _channel = WebSocketChannel.connect(Uri.parse(_signalingServerUrl));
 
@@ -282,11 +293,11 @@ class SignalingService {
         },
       );
 
-      // Join the room
+      // Join the room (room == userId so the web can address us)
       _sendMessage({
         'type': 'join',
         'room': _roomName,
-        'calleeId': getUserId()
+        'calleeId': userId,
       });
 
       print('Connected to signaling server - Waiting for calls...');
@@ -294,6 +305,32 @@ class SignalingService {
       print('Error connecting to signaling server: $e');
       _onCallStateChanged.add(CallState.error);
       rethrow;
+    }
+  }
+
+  /// Register/refresh the device FCM token with the backend.
+  /// Creates the device record if it does not exist yet.
+  Future<void> registerFcmToken(String fcmToken) async {
+    try {
+      final userId = await getUserId();
+      final url = Uri.parse('$_backendBaseUrl/users/$userId/device-token');
+      // Use dart:io HttpClient to avoid adding extra dependencies
+      final client = HttpClient();
+      final request = await client.postUrl(url);
+      request.headers.set('Content-Type', 'application/json');
+      final body = jsonEncode({'token': fcmToken, 'platform': 'android'});
+      request.write(body);
+      final response = await request.close();
+      final statusCode = response.statusCode;
+      if (statusCode == 200 || statusCode == 201) {
+        print('✅ FCM token registered with backend for userId=$userId');
+      } else {
+        print('⚠️ FCM token registration returned HTTP $statusCode for userId=$userId');
+      }
+      client.close();
+    } catch (e) {
+      print('⚠️ Could not register FCM token with backend: $e');
+      // Non-fatal — app continues; push notifications may not work
     }
   }
 
@@ -402,18 +439,21 @@ class SignalingService {
       print('Requesting camera and microphone access...');
 
       try {
-        _localStream = await navigator.mediaDevices.getUserMedia({
+        // Request audio always. Request video only for video calls.
+        // Keep video constraints simple — overly specific constraints
+        // (width/height/frameRate max) can make getUserMedia throw on many
+        // Android devices.
+        final mediaConstraints = <String, dynamic>{
           'audio': {
             'echoCancellation': true,
             'noiseSuppression': true,
           },
-          'video': {
-            'facingMode': 'user', // Front camera
-            'width': {'ideal': 1280, 'max': 1920},
-            'height': {'ideal': 720, 'max': 1080},
-            'frameRate': {'ideal': 30, 'max': 30},
-          }
-        });
+          'video': _callType == 'video'
+              ? {'facingMode': 'user'}
+              : false,
+        };
+
+        _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
       } catch (e) {
         print('❌ Failed to get camera/microphone: $e');
         print('⚠️ Make sure camera and microphone permissions are granted');
@@ -499,13 +539,8 @@ class SignalingService {
       // Apply the new call type locally
       _applyCallTypeLocally(newCallType);
 
-      // Create a new offer with updated constraints
-      RTCSessionDescription offer = await _peerConnection!.createOffer({
-        'mandatory': {
-          'OfferToReceiveAudio': true,
-          'OfferToReceiveVideo': newCallType == 'video',
-        },
-      });
+      // No mandatory constraints — let transceivers drive direction.
+      RTCSessionDescription offer = await _peerConnection!.createOffer({});
 
       // Set local description
       await _peerConnection!.setLocalDescription(offer);
@@ -746,13 +781,8 @@ class SignalingService {
         }
       }
 
-      // Create answer with proper video/audio constraints
-      RTCSessionDescription answer = await _peerConnection!.createAnswer({
-        'mandatory': {
-          'OfferToReceiveAudio': true,
-          'OfferToReceiveVideo': newCallType == 'video',
-        },
-      });
+      // Create answer — no mandatory constraints (see comment in _handleOffer).
+      RTCSessionDescription answer = await _peerConnection!.createAnswer({});
 
       // Set local description (our answer)
       await _peerConnection!.setLocalDescription(answer);
@@ -811,13 +841,12 @@ class SignalingService {
         }
       }
 
-      // Create answer with proper video/audio constraints
-      RTCSessionDescription answer = await _peerConnection!.createAnswer({
-        'mandatory': {
-          'OfferToReceiveAudio': true,
-          'OfferToReceiveVideo': true,
-        },
-      });
+      // Create answer — do NOT pass OfferToReceive* mandatory constraints.
+      // Those legacy flags override the transceiver direction and on Android/
+      // libwebrtc they force the direction to recvonly, meaning the mobile
+      // camera track is NEVER sent to the web caller.
+      // Leaving constraints empty lets the added tracks set sendrecv correctly.
+      RTCSessionDescription answer = await _peerConnection!.createAnswer({});
 
       // Check if answer contains video
       if (answer.sdp != null) {
@@ -1185,11 +1214,20 @@ class SignalingService {
   }
 }
 
+/// Returns the persisted user ID, generating and saving a new UUID on first call.
+/// The user ID is used as the WebSocket room name so the web caller can target
+/// this device and the backend can look up its FCM token for push notifications.
 Future<String> getUserId() async {
   final SharedPreferences prefs = await SharedPreferences.getInstance();
   String? userId = prefs.getString('userId');
-  print('User ID: $userId');
-  return userId ?? '';
+  if (userId == null || userId.isEmpty) {
+    userId = const Uuid().v4();
+    await prefs.setString('userId', userId);
+    print('Generated new userId: $userId');
+  } else {
+    print('User ID: $userId');
+  }
+  return userId;
 }
 
 /// Call state enum
