@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
@@ -389,6 +390,23 @@ class SignalingService {
           // Remote side ended the call
           print('📵 Remote side ended the call');
           await _handleRemoteEndCall();
+          break;
+        case 'call-missed':
+        case 'CALL_MISSED':
+          // Backend timed out the ringing call — dismiss incoming call UI and
+          // silence CallKit so the user does not need to manually dismiss them.
+          print('🔕 Call missed (ring timeout) — dismissing UI');
+          await _stopRingtone();
+          _pendingOffer = null;
+          _onCallStateChanged.add(CallState.ended);
+          try {
+            await FlutterCallkitIncoming.endAllCalls();
+          } catch (e) {
+            print('⚠️ Could not end CallKit UI: $e');
+          }
+          // Brief delay then return to waiting state
+          await Future.delayed(const Duration(milliseconds: 300));
+          _onCallStateChanged.add(CallState.waiting);
           break;
         case 'call-rejected':
           // Remote side rejected the call

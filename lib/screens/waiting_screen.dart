@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/signaling_service.dart';
+import '../services/missed_call_service.dart';
+import 'missed_calls_screen.dart';
 
 class WaitingScreen extends StatefulWidget {
   const WaitingScreen({super.key});
@@ -11,16 +13,51 @@ class WaitingScreen extends StatefulWidget {
 
 class _WaitingScreenState extends State<WaitingScreen> {
   String _userId = '…';
+  int _unseenMissedCallCount = 0;
+
+  final MissedCallService _missedCallService = MissedCallService();
 
   @override
   void initState() {
     super.initState();
     _loadUserId();
+    _loadUnseenCount();
+  }
+
+  @override
+  void dispose() {
+    _missedCallService.dispose();
+    super.dispose();
   }
 
   Future<void> _loadUserId() async {
     final id = await getUserId();
     if (mounted) setState(() => _userId = id);
+  }
+
+  /// Fetch the unseen missed-call badge count from the backend.
+  Future<void> _loadUnseenCount() async {
+    try {
+      final count = await _missedCallService.getUnseenCount();
+      if (mounted) setState(() => _unseenMissedCallCount = count);
+    } catch (_) {
+      // Non-fatal – badge simply stays at 0
+    }
+  }
+
+  /// Opens the missed-calls screen. On return the badge count is refreshed.
+  Future<void> _openMissedCalls() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => MissedCallsScreen(
+          onSeenCountChanged: () {
+            if (mounted) setState(() => _unseenMissedCallCount = 0);
+          },
+        ),
+      ),
+    );
+    // Re-fetch in case new missed calls arrived while we were in the screen.
+    await _loadUnseenCount();
   }
 
   @override
@@ -43,6 +80,42 @@ class _WaitingScreenState extends State<WaitingScreen> {
                     fontWeight: FontWeight.w600,
                   ),
                   textAlign: TextAlign.center,
+                ),
+                const Spacer(),
+                // ── Missed calls badge button ──────────────────────────────
+                Padding(
+                  padding: const EdgeInsets.only(right: 16),
+                  child: GestureDetector(
+                    onTap: _openMissedCalls,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: _unseenMissedCallCount > 0
+                            ? const Color(0xFFEF4444)
+                            : const Color(0xFF0F1B3F),
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.phone_missed_rounded,
+                              color: Colors.white, size: 18),
+                          const SizedBox(width: 6),
+                          Text(
+                            _unseenMissedCallCount > 0
+                                ? 'Missed ($_unseenMissedCallCount)'
+                                : 'Missed Calls',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
