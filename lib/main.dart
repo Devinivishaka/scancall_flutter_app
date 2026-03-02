@@ -1,228 +1,66 @@
-import 'dart:async';
-
+import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_callkit_incoming/entities/android_params.dart';
-import 'package:flutter_callkit_incoming/entities/call_event.dart';
 import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
-import 'package:flutter_callkit_incoming/entities/ios_params.dart';
-import 'package:flutter_callkit_incoming/entities/notification_params.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'screens/call_screen.dart';
+import 'package:uuid/uuid.dart';
 
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+import 'screens/waiting_screen.dart';
+import 'screens/incoming_audio_call.dart';
+import 'screens/incoming_call_modern.dart';
+import 'screens/audio_call_screen.dart';
+import 'screens/video_call.dart';
+import 'screens/call_ended_screen.dart';
+import 'services/signaling_service.dart'; // Use existing service with WebSocket, TURN servers
+import 'services/call_popup_events.dart';
 
+/// Background FCM handler
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Background isolates may not have Firebase configured; fail gracefully.
-  try {
-    await Firebase.initializeApp();
-  } catch (e) {
-    print('⚠️ Background Firebase.initializeApp() failed: $e');
-    // We can't proceed with Firebase-dependent logic in background, so return.
-    return;
-  }
-
-  print('📩 Background FCM message received: ${message.data}');
-
-  final type = message.data['type'];
-  if (type == 'incoming_call') {
-    await _showIncomingCall(message.data);
-  } else if (type == 'call_cancel') {
-    // Cancel the call UI if the caller hung up
-    final callId = message.data['callId'] ?? '';
-    if (callId.isNotEmpty) {
-      await FlutterCallkitIncoming.endCall(callId);
-    } else {
-      await FlutterCallkitIncoming.endAllCalls();
-    }
-  }
+  await Firebase.initializeApp();
+  await _handleIncomingCallPush(message.data);
 }
 
-/// Show native incoming call UI via flutter_callkit_incoming
-Future<void> _showIncomingCall(Map<String, dynamic> data) async {
-  final callId = data['callId'] ?? DateTime.now().millisecondsSinceEpoch.toString();
-  final callerName = data['callerName'] ?? 'Unknown Caller';
-  final callerAvatar = data['callerAvatar'] ?? '';
+/// Show system CallKit UI (iOS + Android) from push data
+Future<void> _handleIncomingCallPush(Map<String, dynamic> data) async {
+  debugPrint("📬 FCM data: $data");
 
-  print('📞 Showing incoming call UI - callId: $callId, caller: $callerName');
+  final id = const Uuid().v4();
+  final callerName = data['callerName'] ?? 'Unknown';
+  final callerId = data['callerId'] ?? 'id';
+  final isVideo =
+      data['isVideo'] == "1" || data['type']?.toString() == "video";
 
   final params = CallKitParams(
-    id: callId,
+    id: id,
     nameCaller: callerName,
     appName: 'ScanCall',
-    avatar: callerAvatar,
-    handle: 'Video Call',
-    type: 0, // 0 = audio, 1 = video
-    duration: 45000, // ring for 45 seconds
+    avatar: 'https://i.pravatar.cc/300',
+    handle: callerId,
+    type: isVideo ? 1 : 0,
+    duration: 30000,
     textAccept: 'Accept',
     textDecline: 'Decline',
-    missedCallNotification: const NotificationParams(
-      showNotification: true,
-      isShowCallback: false,
-      subtitle: 'Missed Call',
-    ),
-    extra: <String, dynamic>{
-      'callId': callId,
-      'callerName': callerName,
-    },
-    android: const AndroidParams(
-      isCustomNotification: true,
-      isShowLogo: false,
-      ringtonePath: 'system_ringtone_default',
-      backgroundColor: '#0955fa',
-      actionColor: '#4CAF50',
-      isShowFullLockedScreen: true,
-      isShowCallID: false,
-    ),
-    ios: const IOSParams(
-      iconName: 'CallKitLogo',
-      handleType: 'generic',
-      supportsVideo: true,
-      maximumCallGroups: 1,
-      maximumCallsPerCallGroup: 1,
-      audioSessionMode: 'default',
-      audioSessionActive: true,
-      audioSessionPreferredSampleRate: 44100.0,
-      audioSessionPreferredIOBufferDuration: 0.005,
-      supportsDTMF: false,
-      supportsHolding: false,
-      supportsGrouping: false,
-      supportsUngrouping: false,
-      ringtonePath: 'system_ringtone_default',
-    ),
+    extra: data,
   );
 
   await FlutterCallkitIncoming.showCallkitIncoming(params);
-  print('✅ Incoming call UI shown successfully');
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
 
-  // Try to initialize Firebase but don't crash the app if it fails. Many
-  // developers forget to add android/app/google-services.json or to apply the
-  // Google Services plugin — which causes the error shown in the logs. We'll
-  // handle that situation gracefully and continue running the app while
-  // disabling FCM-specific flows.
-  var firebaseInitialized = false;
-  try {
-    await Firebase.initializeApp();
-    firebaseInitialized = true;
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  await FirebaseMessaging.instance.requestPermission();
 
-    // Print Firebase config for debugging
-    try {
-      final options = Firebase.app().options;
-      print('Firebase initialized: projectId=${options.projectId}, appId=${options.appId}');
-    } catch (e) {
-      print('⚠️ Could not read Firebase options after init: $e');
-    }
-  } catch (e) {
-    // The PlatformException thrown by the plugin will be caught here. Provide a
-    // clear helpful message so the developer knows how to fix it.
-    print('E/flutter (⚠️) Firebase.initializeApp() failed: $e');
-    print('  → This usually means android/app/google-services.json is missing,');
-    print('    or the Google Services Gradle plugin did not generate the required');
-    print('    resources (google_app_id etc.). To fix: add the google-services.json');
-    print('    file from your Firebase Console into android/app/ and re-run the build,');
-    print('    or initialize Firebase manually with Firebase.initializeApp(options: ...).');
-  }
-
-  saveUserData();
-
-  if (firebaseInitialized) {
-    // Request notification permission (required for Android 13+)
-    await _requestNotificationPermission();
-
-    // Listen for token refreshes
-    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
-      print('🔑 FCM Token refreshed: $newToken');
-    });
-
-    // Print the current FCM token on initialization
-    try {
-      final currentToken = await FirebaseMessaging.instance.getToken();
-      print('🔑 FCM token on init: $currentToken');
-    } catch (e) {
-      print('⚠️ Failed to retrieve FCM token on init: $e');
-    }
-
-    // Set foreground notification presentation options
-    await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
-      alert: false, // Don't show notification banner (we use CallKit)
-      badge: false,
-      sound: false,
-    );
-
-    // Register background message handler
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
-    // Foreground message handler
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      print('🔔 Foreground FCM message: ${message.data}');
-      final type = message.data['type'];
-      if (type == 'incoming_call') {
-        _showIncomingCall(message.data);
-      } else if (type == 'call_cancel') {
-        final callId = message.data['callId'] ?? '';
-        if (callId.isNotEmpty) {
-          FlutterCallkitIncoming.endCall(callId);
-        } else {
-          FlutterCallkitIncoming.endAllCalls();
-        }
-      }
-    });
-
-    // Handle notification tap when app was terminated
-    RemoteMessage? initialMessage = await FirebaseMessaging.instance.getInitialMessage();
-    if (initialMessage != null) {
-      print('📩 App opened from terminated state with FCM: ${initialMessage.data}');
-      if (initialMessage.data['type'] == 'incoming_call') {
-        await _showIncomingCall(initialMessage.data);
-      }
-    }
-
-    // Handle notification tap when app is in background
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      print('📩 App opened from background with FCM: ${message.data}');
-    });
-
-    // Check for any active calls that may have been triggered while app was starting
-    final activeCalls = await FlutterCallkitIncoming.activeCalls();
-    if (activeCalls is List && activeCalls.isNotEmpty) {
-      print('📞 Found ${activeCalls.length} active call(s) on startup');
-    }
-  } else {
-    print('⚠️ Skipping FCM setup because Firebase failed to initialize.');
-    print('   Add android/app/google-services.json or initialize Firebase with FirebaseOptions in Dart.');
-  }
-  
   runApp(const MyApp());
 }
 
-/// Request notification permission for Android 13+ (API 33)
-Future<void> _requestNotificationPermission() async {
-  final messaging = FirebaseMessaging.instance;
-
-  final settings = await messaging.requestPermission(
-    alert: true,
-    announcement: false,
-    badge: true,
-    carPlay: false,
-    criticalAlert: true,
-    provisional: false,
-    sound: true,
-  );
-
-  print('📱 Notification permission: ${settings.authorizationStatus}');
-
-  if (settings.authorizationStatus == AuthorizationStatus.denied) {
-    print('⚠️ Notification permission DENIED - FCM push will not work!');
-    print('   Go to Settings > Apps > ScanCall > Notifications and enable them.');
-  }
-}
 
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
@@ -232,96 +70,252 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  StreamSubscription? _callkitSubscription;
+  // Use existing SignalingService with WebSocket server, TURN servers, backend endpoints
+  final SignalingService _signalingService = SignalingService();
+
+  CallState _callState = CallState.idle;
+  String _statusText = 'Initializing...';
+  bool _showIncomingCallUI = false;
+  String _callType = 'video'; // 'audio' or 'video'
+
+  // Video renderers
+  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
 
   @override
   void initState() {
     super.initState();
-    _listenCallKitEvents();
+    _initializeApp();
+    _setupCallKitListeners();
   }
 
-  /// Listen for CallKit accept/decline events
-  void _listenCallKitEvents() {
-    _callkitSubscription =
-        FlutterCallkitIncoming.onEvent.listen((event) async {
-          print('📱 CallKit event: ${event?.event}');
+  Future<void> _initializeApp() async {
+    // Initialize renderers
+    await _localRenderer.initialize();
+    await _remoteRenderer.initialize();
+    print('✅ Video renderers initialized');
 
-          switch (event?.event) {
-            case Event.actionCallAccept:
-              await _onCallAccepted(event);
-              break;
+    // Initialize signaling service (connects to WebSocket server with TURN servers)
+    await _signalingService.initialize();
 
-            case Event.actionCallDecline:
-              _onCallDeclined(event);
-              break;
+    // Listen to call state changes
+    _signalingService.onCallStateChanged.listen((state) {
+      setState(() {
+        _callState = state;
+        _statusText = _getStatusText(state);
 
-            case Event.actionCallTimeout:
-              print('⏰ Call timed out (not answered)');
-              await FlutterCallkitIncoming.endAllCalls();
-              break;
+        if (state == CallState.waiting) {
+          _showIncomingCallUI = false;
+          _localRenderer.srcObject = null;
+          _remoteRenderer.srcObject = null;
+        }
 
-            case Event.actionCallEnded:
-              print('📵 Call ended via CallKit');
-              break;
+        if (state == CallState.connecting || state == CallState.connected) {
+          _showIncomingCallUI = false;
+        }
+      });
+    });
 
-            default:
-              print('Unhandled CallKit event: ${event?.event}');
-              break;
-          }
-        });
+    // Listen for incoming calls (from WebSocket server)
+    _signalingService.onIncomingCall.listen((_) {
+      setState(() {
+        _showIncomingCallUI = true;
+        _callState = CallState.incoming;
+        _callType = _signalingService.callType;
+        _statusText = '📞 Incoming Call!';
+      });
+      print('🔔 INCOMING CALL - Call type: $_callType');
+    });
+
+    // Listen to remote stream
+    _signalingService.onRemoteStream.listen((stream) {
+      print('🎥 Remote stream received');
+      setState(() {
+        _remoteRenderer.srcObject = stream;
+      });
+    });
+
+    // Listen to local stream
+    _signalingService.onLocalStream.listen((stream) {
+      print('📹 Local stream received');
+      setState(() {
+        _localRenderer.srcObject = stream;
+      });
+    });
+
+    // Listen to call type changes
+    _signalingService.onCallTypeChanged.listen((newType) {
+      setState(() {
+        _callType = newType;
+      });
+      print('🔄 Call type changed → $newType');
+    });
+
+    // Connect to signaling server and wait for calls
+    await _signalingService.connectAndWaitForCalls();
+
+    print('✅ App initialized - Ready to receive calls');
   }
 
-  Future<void> _onCallAccepted(CallEvent? event) async {
-    print('✅ Call ACCEPTED via CallKit');
+  void _setupCallKitListeners() {
+    // Listen to CallKit events (Accept/Decline from system UI)
+    CallPopupEvents.listen((action, data) async {
+      print('📞 CallKit action: $action');
 
-    // Close native CallKit UI
-    await FlutterCallkitIncoming.endAllCalls();
+      switch (action) {
+        case 'ACTION_CALL_ACCEPT':
+          await _acceptCall();
+          break;
 
-    final body = event?.body ?? {};
-    final extra =
-        body['extra'] as Map<dynamic, dynamic>? ?? {};
+        case 'ACTION_CALL_DECLINE':
+          await _rejectCall();
+          break;
 
-    final callId =
-        extra['callId']?.toString() ??
-            body['id']?.toString() ??
-            '';
+        case 'ACTION_CALL_ENDED':
+          await _endCall();
+          break;
+      }
+    });
 
-    final callerName =
-        extra['callerName']?.toString() ??
-            body['nameCaller']?.toString() ??
-            'Unknown';
-
-    print('callId: $callId');
-    print('callerName: $callerName');
+    // Listen for FCM messages (for push notifications)
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      print('🔔 Foreground FCM message: ${message.data}');
+      _handleIncomingCallPush(message.data);
+    });
   }
 
-  void _onCallDeclined(CallEvent? event) {
-    print('❌ Call DECLINED via CallKit');
+  Future<void> _acceptCall() async {
+    try {
+      print('✅ User accepted the call');
+
+      // Check permissions
+      Map<Permission, PermissionStatus> statuses = await [
+        Permission.camera,
+        Permission.microphone,
+      ].request();
+
+      if (statuses[Permission.camera] != PermissionStatus.granted ||
+          statuses[Permission.microphone] != PermissionStatus.granted) {
+        print('❌ Permissions denied');
+        return;
+      }
+
+      setState(() {
+        _showIncomingCallUI = false;
+        _statusText = 'Accepting call...';
+      });
+
+      // Use existing signaling service's accept method (handles WebRTC setup)
+      await _signalingService.acceptCall();
+    } catch (e) {
+      print('❌ Error accepting call: $e');
+    }
+  }
+
+  Future<void> _rejectCall() async {
+    try {
+      print('❌ User rejected the call');
+      setState(() {
+        _showIncomingCallUI = false;
+        _statusText = 'Call rejected';
+      });
+
+      await _signalingService.rejectCall();
+    } catch (e) {
+      print('❌ Error rejecting call: $e');
+    }
+  }
+
+  Future<void> _endCall() async {
+    try {
+      print('📵 Ending call');
+      await _signalingService.endCall();
+
+      setState(() {
+        _showIncomingCallUI = false;
+        _statusText = 'Call ended';
+        _callState = CallState.waiting;
+      });
+    } catch (e) {
+      print('❌ Error ending call: $e');
+    }
+  }
+
+  String _getStatusText(CallState state) {
+    switch (state) {
+      case CallState.idle:
+        return 'Ready';
+      case CallState.waiting:
+        return 'Waiting for call...';
+      case CallState.incoming:
+        return '📞 Incoming Call!';
+      case CallState.connecting:
+        return 'Connecting...';
+      case CallState.connected:
+        return '✅ Call connected';
+      case CallState.ended:
+        return 'Call ended';
+      case CallState.error:
+        return '❌ Error occurred';
+    }
   }
 
   @override
   void dispose() {
-    _callkitSubscription?.cancel();
+    _localRenderer.dispose();
+    _remoteRenderer.dispose();
+    _signalingService.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    Widget screen;
+
+    // Show incoming call UI
+    if (_showIncomingCallUI) {
+      screen = _callType == 'audio'
+          ? IncomingAudioCallScreen(
+              name: "Web Caller",
+              avatar: "https://randomuser.me/api/portraits/men/32.jpg",
+              onAccept: _acceptCall,
+              onReject: _rejectCall,
+            )
+          : IncomingCallModern(
+              onAccept: _acceptCall,
+              onReject: _rejectCall,
+            );
+    }
+    // Show active call UI
+    else if (_callState == CallState.connected || _callState == CallState.connecting) {
+      screen = _callType == 'audio'
+          ? AudioCallScreen(
+              name: "Web Caller",
+              avatar: "https://randomuser.me/api/portraits/men/32.jpg",
+              local: _localRenderer,
+              remote: _remoteRenderer,
+              onEnd: _endCall,
+            )
+          : VideoCallScreen(
+              local: _localRenderer,
+              remote: _remoteRenderer,
+              onEnd: _endCall,
+            );
+    }
+    // Show waiting screen
+    else {
+      screen = const WaitingScreen();
+    }
+
     return MaterialApp(
-      title: 'WebRTC Receiver App',
       debugShowCheckedModeBanner: false,
+      title: 'ScanCall',
       theme: ThemeData(
-        colorScheme:
-        ColorScheme.fromSeed(seedColor: Colors.blue),
+        primarySwatch: Colors.blue,
         useMaterial3: true,
       ),
-      home: const CallScreen(),
+      home: screen,
     );
   }
 }
 
-Future<void> saveUserData() async {
-  final SharedPreferences prefs = await SharedPreferences.getInstance();
-  print('Saving user data to SharedPreferences');
-  await prefs.setString('userId', 'u_2208212d-9e4c-46e8-9731-9cc20ec7c8e5');
-}
