@@ -90,27 +90,21 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   // Toggle Camera
   void toggleCamera() {
-    var videoTrack = widget.local.srcObject?.getVideoTracks().firstWhere(
-      (t) => t.kind == "video",
-    );
-
-    if (videoTrack != null) {
-      videoTrack.enabled = !videoTrack.enabled;
-      setState(() => camEnabled = videoTrack.enabled);
-    }
+    final tracks = widget.local.srcObject?.getVideoTracks() ?? [];
+    if (tracks.isEmpty) return; // no video track yet (e.g. audio-only mode)
+    final videoTrack = tracks.first;
+    videoTrack.enabled = !videoTrack.enabled;
+    setState(() => camEnabled = videoTrack.enabled);
   }
 
   // Switch Camera
   void switchCamera() async {
-    final videoTrack = widget.local.srcObject?.getVideoTracks().firstWhere(
-      (t) => t.kind == "video",
-    );
-
-    if (videoTrack != null) {
-      try {
-        await Helper.switchCamera(videoTrack);
-      } catch (_) {}
-    }
+    final tracks = widget.local.srcObject?.getVideoTracks() ?? [];
+    if (tracks.isEmpty) return;
+    final videoTrack = tracks.first;
+    try {
+      await Helper.switchCamera(videoTrack);
+    } catch (_) {}
   }
 
   // Speaker toggle

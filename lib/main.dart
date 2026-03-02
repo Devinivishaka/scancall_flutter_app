@@ -93,6 +93,11 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _initializeApp() async {
+    // Set debug userId in SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('userId', 'u_2208212d-9e4c-46e8-9731-9cc20ec7c8e5');
+    print('🔧 Debug userId set: u_2208212d-9e4c-46e8-9731-9cc20ec7c8e5');
+
     // Initialize renderers
     await _localRenderer.initialize();
     await _remoteRenderer.initialize();
@@ -141,6 +146,9 @@ class _MyAppState extends State<MyApp> {
     // Listen to local stream
     _signalingService.onLocalStream.listen((stream) {
       print('📹 Local stream received');
+      // Set to null first so the native RTCVideoRenderer reinitializes even when
+      // the same stream object is emitted (new video track was added to it).
+      _localRenderer.srcObject = null;
       setState(() {
         _localRenderer.srcObject = stream;
       });

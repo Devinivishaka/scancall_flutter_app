@@ -89,6 +89,12 @@ class SignalingService {
   // Current call type: 'audio' or 'video'
   String _callType = 'video';
 
+  // Cached RTCRtpSender for the video track.
+  // Must be stored explicitly because after replaceTrack(null) the sender's
+  // track becomes null, so searching getSenders() by track.kind == 'video'
+  // will never find it again — causing a duplicate addTrack on re-enable.
+  RTCRtpSender? _videoSender;
+
   // Stream controllers for callbacks
   final _onCallStateChanged = StreamController<CallState>.broadcast();
   final _onRemoteStream = StreamController<MediaStream>.broadcast();
@@ -470,11 +476,13 @@ class SignalingService {
 
       _onLocalStream.add(_localStream!);
 
-      // Add local tracks to peer connection BEFORE handling offer
-      _localStream!.getTracks().forEach((track) {
-        _peerConnection!.addTrack(track, _localStream!);
+      // Add local tracks to peer connection BEFORE handling offer.
+      // Store the video sender so we can replaceTrack on it during type switch.
+      for (final track in _localStream!.getTracks()) {
+        final sender = await _peerConnection!.addTrack(track, _localStream!);
+        if (track.kind == 'video') _videoSender = sender;
         print('✅ Added ${track.kind} track to peer connection');
-      });
+      }
 
       // Notify the other side that we accepted
       _sendMessage({
@@ -631,23 +639,21 @@ class SignalingService {
     print('   ⏳ Waiting for renegotiation offer from remote...');
   }
 
-  /// Ensure a local video track exists and is added to the peer connection.
+  /// Ensure a live video track exists and is wired to the peer connection.
   Future<void> _ensureVideoTrack() async {
     if (_peerConnection == null) return;
 
-    // Check if we already have a live video track in _localStream
+    // Only skip if _localStream already has a live (not-stopped, enabled) track.
+    // Stopped tracks are removed from _localStream by _removeVideoTracks, so
+    // this check is reliable and won't return early with a dead ghost track.
     final existingVideoTracks = _localStream?.getVideoTracks() ?? [];
     if (existingVideoTracks.isNotEmpty && existingVideoTracks.first.enabled) {
-      print('🎥 Video track already exists and enabled');
-      for (var t in existingVideoTracks) {
-        t.enabled = true;
-      }
+      print('🎥 Video track already live — nothing to do');
       return;
     }
 
-    print('📷 Acquiring new video track for type switch...');
+    print('📷 Acquiring new video track...');
     try {
-      // Get a new video-only stream
       final videoStream = await navigator.mediaDevices.getUserMedia({
         'audio': false,
         'video': {'facingMode': 'user'},
@@ -656,36 +662,31 @@ class SignalingService {
       final newVideoTrack = videoStream.getVideoTracks().first;
       newVideoTrack.enabled = true;
 
-      // Try to replace via existing sender first (cleaner renegotiation)
-      final senders = await _peerConnection!.getSenders();
-      RTCRtpSender? videoSender;
-      for (final s in senders) {
-        if (s.track?.kind == 'video') {
-          videoSender = s;
-          break;
-        }
-      }
-
-      if (videoSender != null) {
-        await videoSender.replaceTrack(newVideoTrack);
-        print('✅ Replaced video track via sender');
-      } else {
-        // No video sender yet — add track from scratch
+      if (_videoSender != null) {
+        // We already have a sender (track was nulled during audio switch).
+        // replaceTrack is the correct operation — avoids duplicate m=video sections.
+        await _videoSender!.replaceTrack(newVideoTrack);
+        // Make the new track visible to the local renderer.
         if (_localStream != null) {
-          _localStream!.addTrack(newVideoTrack);
-          await _peerConnection!.addTrack(newVideoTrack, _localStream!);
+          await _localStream!.addTrack(newVideoTrack);
+        }
+        print('✅ Replaced video track via _videoSender');
+      } else {
+        // First time adding video (call started as audio-only).
+        if (_localStream != null) {
+          await _localStream!.addTrack(newVideoTrack); // must await — track must be in stream before renderer fires
+          _videoSender =
+              await _peerConnection!.addTrack(newVideoTrack, _localStream!);
         } else {
           _localStream = videoStream;
-          await _peerConnection!.addTrack(newVideoTrack, _localStream!);
+          _videoSender =
+              await _peerConnection!.addTrack(newVideoTrack, _localStream!);
         }
-        print('✅ Added new video track to peer connection');
+        print('✅ Added new video track and stored _videoSender');
       }
 
-      // Add the new track to _localStream so the UI can show it
-      if (_localStream != null && !_localStream!.getVideoTracks().contains(newVideoTrack)) {
-        _localStream!.addTrack(newVideoTrack);
-      }
-
+      // Null-then-set forces the native renderer to reinitialize even when
+      // the stream object reference hasn't changed (new track was added to it).
       _onLocalStream.add(_localStream!);
     } catch (e) {
       print('❌ Failed to acquire video track: $e');
@@ -693,24 +694,44 @@ class SignalingService {
     }
   }
 
-  /// Disable and remove video tracks from the peer connection senders.
+  /// Stop and remove local video tracks, null out the sender track.
   Future<void> _removeVideoTracks() async {
     if (_peerConnection == null) return;
 
-    // Disable local video tracks
-    _localStream?.getVideoTracks().forEach((t) {
+    // Stop tracks AND remove them from _localStream.
+    // If we only stop() without removeTrack(), _ensureVideoTrack will later
+    // find the stopped (but still listed) track, see enabled==false, call
+    // _applyCallTypeLocally which sets enabled=true on the dead track, and
+    // then skip acquiring a fresh camera — causing a frozen black frame.
+    final videoTracks =
+        List<MediaStreamTrack>.from(_localStream?.getVideoTracks() ?? []);
+    for (final t in videoTracks) {
       t.enabled = false;
       t.stop();
-      print('🔇 Stopped local video track: ${t.id}');
-    });
+      await _localStream?.removeTrack(t);
+      print('🔇 Stopped + removed local video track: ${t.id}');
+    }
 
-    // Null out the track on the sender so the remote side stops receiving video
+    // Null out the sender. Prefer the cached _videoSender; fall back to scan.
+    if (_videoSender != null) {
+      try {
+        await _videoSender!.replaceTrack(null);
+        print('🔇 Nulled _videoSender track (will reuse sender on re-enable)');
+      } catch (e) {
+        print('⚠️ Could not null _videoSender: $e');
+      }
+      // Keep _videoSender reference so replaceTrack works on re-enable.
+      return;
+    }
+
+    // Fallback: scan all senders (only hit if _videoSender wasn't set)
     final senders = await _peerConnection!.getSenders();
     for (final s in senders) {
       if (s.track?.kind == 'video') {
         try {
           await s.replaceTrack(null);
-          print('🔇 Removed video track from sender');
+          _videoSender = s; // cache for next time
+          print('🔇 Removed video track from sender (fallback scan)');
         } catch (e) {
           print('⚠️ Could not null video sender track: $e');
         }
@@ -766,16 +787,18 @@ class SignalingService {
       // Update call type
       _callType = newCallType;
 
-      // Apply the new call type locally (enable/disable video)
-      _applyCallTypeLocally(newCallType);
-
-      // If switching to video and we don't have a video track, acquire one
+      // For video: acquire/replace the camera track FIRST (before any
+      // _applyCallTypeLocally call that could re-enable a stopped ghost track
+      // and make _ensureVideoTrack think the camera is already live).
+      // For audio: just apply locally (stop + remove video tracks).
       if (newCallType == 'video') {
-        final existingVideoTracks = _localStream?.getVideoTracks() ?? [];
-        if (existingVideoTracks.isEmpty || !existingVideoTracks.first.enabled) {
-          print('📷 Acquiring video track for renegotiation...');
-          await _ensureVideoTrack();
-        }
+        print('📷 Ensuring video track for renegotiation...');
+        await _ensureVideoTrack();
+        // Re-emit the stream so VideoCallScreen (which builds after onCallTypeChanged
+        // fires below) gets a renderer refresh and shows live camera frames.
+        if (_localStream != null) _onLocalStream.add(_localStream!);
+      } else {
+        _applyCallTypeLocally(newCallType);
       }
 
       // Create answer — no mandatory constraints (see comment in _handleOffer).
@@ -1032,6 +1055,7 @@ class SignalingService {
       // Close peer connection
       await _peerConnection?.close();
       _peerConnection = null;
+      _videoSender = null; // Clear stale sender — old PC is gone; next call must re-create it
 
       // Close WebSocket
       await _channel?.sink.close();
@@ -1082,6 +1106,7 @@ class SignalingService {
       // Close peer connection
       await _peerConnection?.close();
       _peerConnection = null;
+      _videoSender = null; // Clear stale sender — old PC is gone; next call must re-create it
 
       // Close WebSocket
       await _channel?.sink.close();
